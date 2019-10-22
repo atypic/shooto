@@ -3,7 +3,6 @@ import os
 import argparse
 import random
 import pygame
-import matplotlib.pyplot as plt
 import select
 import datetime
 from collections import deque 
@@ -16,35 +15,15 @@ import glob
 import itertools
 #from pytmx.util_pygame import load_pygame
 #import pyscroll
-from opensimplex import OpenSimplex
+#from opensimplex import OpenSimplex
 
 import signal
 import sys
 
 PORT=4162
 
-def line_intersect(p1,p2,p3,p4):
-        d = (p2[0] - p1[0]) * (p4[1] - p3[1]) - (p2[1] - p1[1]) * (p4[0] - p3[0])
-        if d == 0:
-            return None
-        u = ((p3[0] - p1[0]) * (p4[1] - p3[1]) - (p3[1] - p1[1]) * (p4[0] - p3[0]))/d
-        v = ((p3[0] - p1[0]) * (p2[1] - p1[1]) - (p3[1] - p1[1]) * (p2[0] - p3[0]))/d
-
-        if (u < 0.0 or u > 1.0):
-            return None
-        if (v < 0.0 or v > 1.0):
-            return None
-        
-        isect = [None,None]
-        isect[0] = p1[0] + u * (p2[0] - p1[0])
-        isect[1] = p1[1] + u * (p2[1] - p1[1])
-
-        return isect
-
-
 class GameMap():
     def __init__(self, mapfile=None, size=(2000,1000)):
-        gen = OpenSimplex()
         self.size = size
         self.genmap = []
         #self.map_surface = pygame.Surface(size)
@@ -293,7 +272,7 @@ import pickle
 from collections import defaultdict
 
 class ShootoServer():
-    def __init__(self):
+    def __init__(self, address=None):
         #socket and shit.
         self.connected_clients = []
         self.recently_disconnected = []
@@ -301,7 +280,12 @@ class ShootoServer():
         self.players = {}
         self.event_queue = []
         self.socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        self.socket.bind(('localhost', PORT))
+        if address is not None:
+            hostname, port = address.split(':')
+            self.socket.bind((hostname, int(port)))
+        else:
+            self.socket.bind(('localhost', PORT))
+
         self.servertime = 0
         self.socket.setblocking(0)         
 
@@ -460,7 +444,7 @@ class ClientUpdatePacket():
         self.playervel = {}
 
 def main_server(args):
-    server = ShootoServer()
+    server = ShootoServer(args.server)
     server.server_main()
     quit() 
 
@@ -700,7 +684,8 @@ if __name__ == '__main__':
     signal.signal(signal.SIGINT, signal_handler)
 
     parser = argparse.ArgumentParser()
-    parser.add_argument("-s", "--server",  action="store_true", help="Start the server")
+    parser.add_argument("-s", "--server",  action="store", help="Start the server at given ip addr\
+            interface")
     parser.add_argument("-c", "--connect",  action="store", help="Start the server")
 
     args = parser.parse_args()
@@ -726,17 +711,10 @@ if __name__ == '__main__':
 
     client.connect_server(player, server_addr=args.connect)
 
-    #else, let's connect to the server.
-    #client_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    #server_addr = ('localhost', PORT)
-    #client_socket.setblocking(0)         
-
     gmap = GameMap(mapfile='map1.png')
     zoom = 1.0
     fps = 60.
     clock = pygame.time.Clock()
-
-
     
     write_rdy = []
     read_rdy = []
