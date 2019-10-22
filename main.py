@@ -633,7 +633,8 @@ class Client():
         if server_addr is None:
             self.server_addr = ('localhost', PORT)
         else:
-            self.server_addr = server_addr
+            hostname, port = server_addr.split(':')
+            self.server_addr = (hostname, int(port))
         self.client_socket.setblocking(0) 
 
         meta_sent = False
@@ -700,7 +701,7 @@ if __name__ == '__main__':
 
     parser = argparse.ArgumentParser()
     parser.add_argument("-s", "--server",  action="store_true", help="Start the server")
-    parser.add_argument("-c", "--client",  action="store", help="Start the server")
+    parser.add_argument("-c", "--connect",  action="store", help="Start the server")
 
     args = parser.parse_args()
 
@@ -723,7 +724,7 @@ if __name__ == '__main__':
     player.rect.y = 0
     other_players = {}
 
-    client.connect_server(player)
+    client.connect_server(player, server_addr=args.connect)
 
     #else, let's connect to the server.
     #client_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
