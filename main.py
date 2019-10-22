@@ -19,13 +19,15 @@ import itertools
 
 import signal
 import sys
+from PIL import Image
+import numpy as np
 
 PORT=4162
 
 class GameMap():
-    def __init__(self, mapfile=None, size=(2000,1000)):
+    def __init__(self, mapfile=None, size=(2000,1000), server=False):
         self.size = size
-        self.genmap = []
+        self.map = None
         #self.map_surface = pygame.Surface(size)
         #self.pixels = pygame.PixelArray(self.map_surface)
         self.pixels = None
@@ -39,9 +41,13 @@ class GameMap():
                     #self.pixels[x,y] = pygame.Color(100,0,0) if v > 0 else pygame.Color(50,150,50)
 
         else:
-            self.map = pygame.image.load(mapfile).convert()#.convert_alpha()
-            #self.pixels = pygame.PixelArray(map_png)
-            self.size = self.map.get_size()
+            if server:
+                self.pixels = Image.open(mapfile)
+                self.size = self.pixels.size
+                self.pixels = np.swapaxes(np.asarray(self.pixels), 0, 1)
+            else:
+                self.map = pygame.image.load(mapfile).convert()#.convert_alpha()
+                self.size = self.map.get_size()
 
         self.current_visible_surface = None
  
@@ -120,7 +126,7 @@ class Player(pygame.sprite.Sprite):
         self.color = col
         self.img.fill(self.color)
 
-    def react(self, event_type, event_key):
+    def react(self, event_type, event_key, keystate):
         if event_type == pygame.KEYDOWN:
             if event_key == pygame.K_a:
                 self.facing_left = True
@@ -156,7 +162,6 @@ class Player(pygame.sprite.Sprite):
         
         if event_type == pygame.KEYUP:
             #pressed keys
-            keystate = pygame.key.get_pressed()
             if event_key == pygame.K_a and self.velocity[0] < 0:
                 if keystate[pygame.K_d]:
                     self.facing_left = False
@@ -178,7 +183,7 @@ class Player(pygame.sprite.Sprite):
  
 
 
-  
+    #remember mappy needs to be a pixel array
     def update(self, mappy, dt):
         self.grounded = False
         self.velocity[1] += 1000. * dt   #gravity, but why is this fucked?
@@ -192,22 +197,25 @@ class Player(pygame.sprite.Sprite):
 
         self.rect.x = max(0, min(mappy.size[0]-16, self.rect.x))
         self.rect.y = max(0, min(mappy.size[1]-16, self.rect.y))
-        px = pygame.PixelArray(mappy.map)
+        #px = pygame.PixelArray(mappy.map)
+        px = mappy.pixels
 
         raylen = int(abs(delta_distance_y)) + 1
         
-        collision_value = mappy.map.map_rgb(255,0,0)
+        #collision_value = mappy.map.map_rgb(255,0,0)  #what?
+        collision_value = [255,0,0]
+
         #bottom collision, iterate all pixels and check for match.
         if self.velocity[1] >= 0: #we are falling, positive is down.
             for rpixl in range(self.rect.bottom, min(mappy.size[1], self.rect.bottom + raylen)):
-                if px[self.rect.centerx][rpixl] == collision_value:
+                if (px[self.rect.centerx][rpixl] == collision_value).all():
                     self.rect.bottom = rpixl
                     #self.posy = self.rect.bottom
                     self.velocity[1] = 0
                     self.grounded = True
                     break
         
-        px.close()
+        #px.close()
 
         #update bullets
         for b in self.bullets:
@@ -225,7 +233,8 @@ class Player(pygame.sprite.Sprite):
             self.hitters.pop(idx)
 
     def bullet_collisions(self, mappy, dt):
-        px = pygame.PixelArray(mappy.map)
+        #px = pygame.PixelArray(mappy.map)
+        px = mappy.pixels
         for b in self.bullets:
             if b.rect.right > mappy.size[0]:
                 self.bullets.remove(b)
@@ -242,26 +251,26 @@ class Player(pygame.sprite.Sprite):
 
             delta_distance_y = dt * b.velocity[1]
             raylen = int(abs(delta_distance_y)) + 1
-        
-            collision_value = mappy.map.map_rgb(255,0,0)
+       
+            collision_value = [255, 0, 0]
             #bottom collision, iterate all pixels and check for match.
             if b.velocity[1] > 0: #bullets going down
                 if self.grounded:
                     self.bullets.remove(b)
                     continue
                 for rpixl in range(b.rect.bottom, min(mappy.size[1], b.rect.bottom + raylen)):
-                    if px[b.rect.centerx][rpixl] == collision_value:
+                    if (px[b.rect.centerx][rpixl] == collision_value).all():
                         self.bullets.remove(b)
                         break
             #bullets going up
             elif b.velocity[1] < 0:
                 #print(b.rect.top - raylen, b.rect.top)
                 for rpixl in range(max(0, b.rect.top - raylen), b.rect.top):
-                    if px[b.rect.centerx][rpixl] == collision_value:
+                    if (px[b.rect.centerx][rpixl] == collision_value).all():
                         self.bullets.remove(b)
                         break
  
-        px.close()
+        #px.close()
         
         return
             
@@ -293,10 +302,10 @@ class ShootoServer():
         self.pid = 0
         self.cliaddr_to_pid = {}
 
-        pygame.init()
-        os.environ['SDL_VIDEODRIVER'] = 'dummy'
-        screen = pygame.display.set_mode((400,400))
-        self.gmap = GameMap(mapfile='map1.png')
+        #pygame.init()
+        #os.environ['SDL_VIDEODRIVER'] = 'dummy'
+        #screen = pygame.display.set_mode((400,400))
+        self.gmap = GameMap(mapfile='map1.png', server=True) #erk.
 
 
     def server_main(self):
@@ -338,7 +347,7 @@ class ShootoServer():
                         #print(f"got event from {pid}, {event}")
                         #todo: do some stuff with respect to the event[0] timestamp thing.
                         #self.players[pid].name = event[3]  #eeeeh...
-                        self.players[pid].react(event[2], event[3])  #react to events...
+                        self.players[pid].react(event[2], event[3], event[6])  #react to events...
                     self.event_queue = []
               
                 for pid in self.players.keys():
@@ -740,9 +749,10 @@ if __name__ == '__main__':
                 game_over = True
             if event.type == pygame.KEYDOWN or event.type == pygame.KEYUP:
                 _, write_rdy, in_err = select.select([],[client.client_socket],[client.client_socket], 0)
+                keystate = pygame.key.get_pressed()
                 #send event to server
                 if client.client_socket in write_rdy:
-                    msg = ["event", eventcount, event.type, event.key, player.name, dt]
+                    msg = ["event", eventcount, event.type, event.key, player.name, dt, keystate]
                     send_socket(client.client_socket, msg, client.server_addr)
 
 
