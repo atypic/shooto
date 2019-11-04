@@ -1,4 +1,5 @@
 import errno
+import copy
 import os
 import argparse
 import random
@@ -13,6 +14,7 @@ from pygame import *
 from pygame.math import Vector2
 import glob
 import itertools
+import numpy as np
 #from pytmx.util_pygame import load_pygame
 #import pyscroll
 #from opensimplex import OpenSimplex
@@ -20,14 +22,13 @@ import itertools
 import signal
 import sys
 from PIL import Image
-import numpy as np
 
 PORT=4162
 
 class GameMap():
     def __init__(self, mapfile=None, size=(2000,1000), server=False):
         self.size = size
-        self.map = None
+            #ugghself.map = None
         #self.map_surface = pygame.Surface(size)
         #self.pixels = pygame.PixelArray(self.map_surface)
         self.pixels = None
@@ -40,19 +41,21 @@ class GameMap():
                     self.genmap[y][x] = 1 if v > 0 else 0
                     #self.pixels[x,y] = pygame.Color(100,0,0) if v > 0 else pygame.Color(50,150,50)
 
-        else:
-            if server:
-                self.pixels = Image.open(mapfile)
-                self.size = self.pixels.size
-                self.pixels = np.swapaxes(np.asarray(self.pixels), 0, 1)
-            else:
-                self.map = pygame.image.load(mapfile).convert()#.convert_alpha()
-                self.size = self.map.get_size()
+        self.pixels = Image.open(mapfile)
+        self.size = self.pixels.size
+        self.pixels = np.swapaxes(np.asarray(self.pixels), 0, 1)
+        if not server:
+            self.map = pygame.image.load(mapfile).convert()#.convert_alpha()
 
         self.current_visible_surface = None
  
         self.tile_width = 1
         self.tile_height = 1
+
+        self.spawnpoints = [[0,0], 
+                            [self.size[0]-16, self.size[1] - 200],
+                            [self.size[0]/2, self.size[1]/2]]
+
         #render the entire map.
         #self.map_surface = pygame.Surface((self.tile_width * size[0], self.tile_height * size[1]))
         #print(self.tile_width * size[0], self.tile_height * size[1])
@@ -95,11 +98,18 @@ class Bullet():
 
 
 class Player(pygame.sprite.Sprite):
-    def __init__(self, pos=(0,0), frames=None, color=pygame.Color(255, 0, 0)):
+    def __init__(self, pos=(0,0), frames=None, color=pygame.Color(255, 0, 0), client=False, hp=5):
         super().__init__()
         self.velocity = [0.,0.]
         self.grounded = False
         self.facing_left = False
+       
+        self.pid = -1
+        
+        self.client = client
+        self.updates_without_events = 0
+        self.cliaddr = None
+        self.magic_value = None
 
         self.color = color
         self.img = pygame.Surface((16,16))
@@ -116,11 +126,17 @@ class Player(pygame.sprite.Sprite):
         #these are things that are fired and needs updating when time ticks.
         self.bullets = []
         self.name = "UnnamedPlayer"
-        self.pid = -1
         self.score = 0
+        self.ready = False
+        self.health = hp
 
         self.holding_up = False
         self.holding_down = False
+
+        self.spawnpoint = 0
+        self.cooldown = 0
+
+
 
     def update_color(self, col):
         self.color = col
@@ -284,14 +300,17 @@ class ShootoServer():
     def __init__(self, address=None):
         #socket and shit.
         self.connected_clients = []
+        self.missing_connection_acks = []
         self.recently_disconnected = []
 
         self.players = {}
         self.event_queue = []
+        self.meta_queue = []
         self.socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         if address is not None:
             hostname, port = address.split(':')
             self.socket.bind((hostname, int(port)))
+            print("bound socket")
         else:
             self.socket.bind(('localhost', PORT))
 
@@ -302,10 +321,78 @@ class ShootoServer():
         self.pid = 0
         self.cliaddr_to_pid = {}
 
-        #pygame.init()
-        #os.environ['SDL_VIDEODRIVER'] = 'dummy'
-        #screen = pygame.display.set_mode((400,400))
         self.gmap = GameMap(mapfile='map1.png', server=True) #erk.
+
+        #gamestate 0 is clock not running.
+        self.gamestate = 0
+    
+        self.settings = {}
+        self.settings['cooldown'] = 0.5
+        self.settings['initial_hp'] = 5
+
+        self.timeleft = 10
+
+    def handle_queues(self):
+        if len(self.meta_queue) > 0:
+            for cliaddr, meta in self.meta_queue:
+                if cliaddr not in self.cliaddr_to_pid.keys():
+                    self.player_factory(cliaddr,
+                                    meta[1],
+                                    meta[2], 
+                                    meta[3]
+                                    )
+                pid = self.cliaddr_to_pid[cliaddr]
+                self.players[pid].name = meta[1]
+                self.players[pid].color = meta[2]
+
+            self.meta_queue = []
+
+        if len(self.event_queue) >  0:
+            for cliaddr, event in self.event_queue:
+                pid = self.cliaddr_to_pid[cliaddr]
+
+                if self.players[pid].cooldown == 0:
+                    self.players[pid].react(event[2], event[3], event[6])  #react to events
+
+
+                self.players[pid].updates_without_events = 0
+
+            self.event_queue = []
+
+    def player_collision(self, pid, pid2):
+        #check for collisions against other clients.
+        #no self collissions please
+        if pid != pid2:
+            #check all of pid's bullets for collision with pid2 :(
+            bullets_to_remove = []
+            for ib, bullet in enumerate(self.players[pid].bullets):
+                if bullet.rect.colliderect(self.players[pid2].rect):
+                    #not your own bullet
+                    if not (ib, pid2) in self.bullet_hits[pid]:
+                        self.bullet_hits[pid].append((ib, pid2))
+                        self.players[pid2].hitters.append([0.5, pid2])
+                        #only hit if not cooled down
+                        if self.players[pid2].cooldown == 0:
+                            self.players[pid2].health = max(self.players[pid2].health - 1, 0)
+                        bullets_to_remove.append(bullet)
+                        
+                        #did we die? if so, set a new spawnpoint, but don't move the
+                        #player until a cooldown.
+                        if self.players[pid2].health == 0:
+                            self.players[pid].score += 1.0
+                            print(self.players[pid2], " died!")
+                            sp = random.randrange(0, len(self.gmap.spawnpoints))
+                            self.players[pid2].rect.x = self.gmap.spawnpoints[sp][0]
+                            self.players[pid2].rect.y = self.gmap.spawnpoints[sp][1]
+                            print("new position: ", self.gmap.spawnpoints[sp])
+                            self.players[pid2].cooldown = self.settings['cooldown']
+                            self.players[pid2].health = self.settings['initial_hp']
+
+
+            #this removes the bullets shot that hit something.
+            self.players[pid].bullets = [x for x in self.players[pid].bullets if x not in
+                                        bullets_to_remove]
+
 
 
     def server_main(self):
@@ -317,94 +404,105 @@ class ShootoServer():
         #every 100ms or so.
         clock = pygame.time.Clock()
 
-        t = datetime.datetime.now()
-        dt = 0
+        countdown = 3.0
+
+        #t = datetime.datetime.now()
+        #dt = 0
         time_last_update = datetime.datetime.now()
         time_last_update_2 = datetime.datetime.now()
+
         while(not game_over):
-            dt = datetime.datetime.now() - t
-            t = datetime.datetime.now()
-            #t = clock.tick_busy_loop(ups) / 1000.
-            #might have a new connection.
-            ready_to_read, ready_to_write, in_error = \
-               select.select(
-                  [self.socket],   #readers
-                  [self.socket],  #writers
-                  [self.socket], #errors
-                  0)
+            #dont tick time if game hasn't even started yet.
+            self.receive_from_clients()
 
+            #chech if everyone is ready!
+            if self.gamestate == 0:
+                ready_states = [p.ready for p in self.players.values()]
+                if len(ready_states) > 0 and False not in ready_states:
+                    self.gamestate = 1
 
-            #print("claims to be ready to recieve: ", ready_to_read)
-            #this needs to happen all the time.
-            if self.socket in ready_to_read:
-                self.receive_from_clients()
-            
+            if self.gamestate == 1:
+                if self.timeleft < 0:
+                    self.gamestate = 2
+
             diff = datetime.datetime.now() - time_last_update
+
             if diff.total_seconds() * 1000 > 20:
-                if len(self.event_queue) >  0:
-                    for cliaddr, event in self.event_queue:
-                        pid = self.cliaddr_to_pid[cliaddr]
-                        #print(f"got event from {pid}, {event}")
-                        #todo: do some stuff with respect to the event[0] timestamp thing.
-                        #self.players[pid].name = event[3]  #eeeeh...
-                        self.players[pid].react(event[2], event[3], event[6])  #react to events...
-                    self.event_queue = []
-              
+                #handle the queues!
+                self.handle_queues()
+            
+                if self.gamestate == 0:
+                    time_last_update = datetime.datetime.now()
+                    continue
+               
+
                 for pid in self.players.keys():
                     self.players[pid].update(self.gmap, diff.total_seconds()) #collision detection.
-                
-                #all players and bullets moved, did the bullets hit anything
-                for pid in self.players.keys():
+                    self.players[pid].updates_without_events += 1
+                    self.players[pid].cooldown = max(0, self.players[pid].cooldown - diff.total_seconds())
+
                     for pid2 in self.players.keys():
-                        #no self collissions please
-                        if pid != pid2:
-                            #check all of pid's bullets for collision with pid2 :(
-                            bullets_to_remove = []
-                            for ib, bullet in enumerate(self.players[pid].bullets):
-                                if bullet.rect.colliderect(self.players[pid2].rect):
-                                    #not your own bullet
-                                    if not (ib, pid2) in self.bullet_hits[pid]:
-                                        self.bullet_hits[pid].append((ib, pid2))
-                                        self.players[pid2].hitters.append([0.5, pid2])
-                                        self.players[pid].score += 1.0
-                                        bullets_to_remove.append(bullet)
+                        self.player_collision(pid, pid2)
 
-                            #this removes the bullets shot that hit something.
-                            self.players[pid].bullets = [x for x in self.players[pid].bullets if x not in
-                                                        bullets_to_remove]
-
-                #finally, figure out if bullets hit world objects
-                for pid in self.players.keys():
+                    #finally, figure out if bullets hit world objects
                     self.players[pid].bullet_collisions(self.gmap, diff.total_seconds()) #collision detection.
                  
                 time_last_update = datetime.datetime.now()
 
+            #handling done.
             diff = datetime.datetime.now() - time_last_update_2
             if diff.total_seconds() * 1000 > 20:
-                wr_rdy, rd_rdy, in_error = select.select( [self.socket], [self.socket], [], 0) #errors
-
-                self.update_clients(wr_rdy)
+                if self.gamestate == 1:
+                    self.timeleft -= diff.total_seconds()
+                self.update_clients()
                 time_last_update_2 = datetime.datetime.now()
 
-   
+            #prune dead users..
+            for pid in self.players.keys():
+                if self.players[pid].updates_without_events > 10000:
+                    #let's remove...
+                    self.connected_clients.remove(self.players[pid].cliaddr)
+                    self.recently_disconnected.append((self.players.cliaddr, pid))
+                    p = self.players.pop(pid)
+                    print(f"{p.name} disconnected!")
+
+            
+  
+    def player_factory(self, cliaddr, name, color, magic):
+        self.cliaddr_to_pid[cliaddr] = self.pid
+        self.players[self.pid] = Player(color=color, hp=self.settings['initial_hp'])
+        self.players[self.pid].name = name
+        self.players[self.pid].cliaddr = cliaddr
+        self.players[self.pid].pid = self.pid
+        self.players[self.pid].magic_value = magic
+
+        #do i really need this?
+        sp = random.randrange(0, len(self.gmap.spawnpoints))
+        self.players[self.pid].spawnpoint = sp
+        self.players[self.pid].rect.x = self.gmap.spawnpoints[sp][0]
+        self.players[self.pid].rect.y = self.gmap.spawnpoints[sp][1]
+
+        self.connected_clients.append(cliaddr)
+        self.pid += 1
+        print(f"Created a new player: {name} at {cliaddr}")
+
+        return 
+
     def receive_from_clients(self):
         dat, cliaddr = rcv_socket(self.socket)
         #filter on message type here i guess.
         if not dat:
             return
-
         if dat[0] == "event":
             self.event_queue.append((cliaddr, dat))
             #print("got event!")
         elif dat[0] == "player_meta":
-            self.players[self.pid] = Player(color=dat[2])
-            self.players[self.pid].name = dat[1]
-            self.cliaddr_to_pid[cliaddr] = self.pid
-            self.connected_clients.append(cliaddr)
-            self.players[self.pid].pid = self.pid
-            print(f"new player {dat[1]}  got pid {self.pid}.")
-            self.pid += 1
-            #pong back to client
+            #check if we have already made a player for this client.
+            self.meta_queue.append((cliaddr, dat))
+        elif dat[0] == "player_ready":
+            #check if we have already made a player for this client.
+            pid = self.cliaddr_to_pid[cliaddr]
+            self.players[pid].ready = True
         elif dat[0] == "player_disconnect":
             self.connected_clients.remove(cliaddr)
             pid = self.cliaddr_to_pid[cliaddr]
@@ -414,7 +512,7 @@ class ShootoServer():
             print(self.recently_disconnected)
 
 
-    def update_clients(self, wr_rdy):
+    def update_clients(self):
         state = ["state", [(p.pid, 
                             p.name, 
                             p.rect.x, p.rect.y, 
@@ -422,7 +520,12 @@ class ShootoServer():
                             p.bullets, 
                             p.score, 
                             p.hitters,
-                            p.color) for k, p in
+                            p.color,
+                            p.magic_value,
+                            p.ready,
+                            self.gamestate,
+                            p.health,
+                            self.timeleft) for k, p in
             self.players.items()]]
         to_remove = []
         for c in self.connected_clients:
@@ -440,18 +543,6 @@ class ShootoServer():
         self.bullet_hits = defaultdict(list)
     
    
-class ClientInputPacket():
-    def __init__(self):
-        #python events
-        self.timestamp = 0
-        self.events = []
-
-class ClientUpdatePacket():
-    def __init__(self):
-        self.servertime = 0
-        self.playerpos = {}
-        self.playervel = {}
-
 def main_server(args):
     server = ShootoServer(args.server)
     server.server_main()
@@ -504,31 +595,95 @@ class TextInputBox():
         letter_render = self.font.render(self.leadtext + self.entered_text, True, self.font_color)
         target_surface.blit(letter_render, self.position)
 
+"""
+class SelectBox():
+    def __init__(self, options=None, font='inconsolata.ttf', fontsize=32, color=(255,0,0)):
+        self.selected_option = 0
+        self.options = options
+        self.color = color
+        self.full_surface = None
+        self.font = pygame.font.Font(font, fontsize)
+    
+    def draw_options(self):
+        if self.options is None:
+            return pygame.Surface((0,0))
+
+        offset = 0.0
+        for text in self.options:
+            tsurf = self.font.render(text, True, self.color)
+            offset += tsurf.get_rect().top
+"""
 
 class TextMessage():
-    def __init__(self, text, position, duration, surface_size=None, font='inconsolata.ttf', fontsize=32):
+    def __init__(self, text, position, duration, fontface='inconsolata.ttf', fontsize=32):
         green = (0, 255, 0) 
-        blue = pygame.Color('black')
-        font = pygame.font.Font(font, fontsize) 
-        self.rtext = font.render(text, True, blue)
-        #if not surface_size:
-        #    surface_size = self.rtext.get_size()
-        #self.alpha_img = pygame.Surface(surface_size, pygame.SRCALPHA)
-        #self.alpha_img.fill((255,255,255,255))
-        #self.rtext.blit(self.alpha_img, (0,0), special_flags=pygame.BLEND_RGBA_MULT)
+        self.color = pygame.Color('black')
+        self.font = pygame.font.Font(fontface, fontsize) 
+        self.rtext = self.font.render(text, True, self.color)
 
         self.textrect = self.rtext.get_rect()
         self.textrect.topleft = position
         self.timeleft = duration
 
-    def get_surface(self, dt):
+    def update_text(self, new_text):
+        self.rtext = self.font.render(new_text, True, self.color)
+
+    def get_surface(self, dt=0):
         if (self.timeleft > 0) or (self.timeleft == 0):
             self.timeleft -= dt
             return self.rtext
         else:
             print("timeleft", self.timeleft)
             return None
-   
+
+class MultilineTextBox():
+    def __init__(self, lines=[], color = pygame.Color('black'), font = 'inconsolata.ttf', fontsize =
+            20, bgcolor = (50,500,100,255)):
+        self.lines = lines
+        self.textsurface = pygame.Surface((1,1))
+        self.fontcolor = color
+        self.fontsize = fontsize
+        self.bgcolor = bgcolor
+        self.font = pygame.font.Font(font, fontsize)
+
+    def update(self, lines):
+        self.lines = lines
+        self.update_surface()
+
+    def get_surface(self):
+        return self.textsurface
+
+    def update_surface(self):
+        #re-render and return a new surface.
+        row_surf = []
+        for row in self.lines:
+            row_surf.append(self.font.render(row, True, self.fontcolor))
+
+        max_width = 0
+        max_height = 0
+        if len(self.lines) > 0:
+            max_row = max(row_surf, key=lambda x: x.get_width())
+            max_width = max_row.get_width()
+            max_height = max_row.get_height()
+        else:
+            return self.textsurface
+       
+        self.textsurface = pygame.Surface((max_width, max_height * len(self.lines)),
+                                            pygame.SRCALPHA) 
+        
+        print(f"surface made with dims {self.textsurface.get_size()}")
+        #fill the surface with black and fully visible alpha channel.
+        #blend_mult will multiply pixels and shift 8 right (div by 256)
+        self.textsurface.fill(self.bgcolor)
+        for rownum, line_surface in enumerate(row_surf):
+            self.textsurface.blit(line_surface, (0, max_height * rownum), special_flags =
+                    pygame.BLEND_RGBA_MULT)
+        
+
+        return self.textsurface
+
+
+
 class ScoreBoard():
     def __init__(self):
         self.players = []
@@ -588,102 +743,247 @@ class Client():
         pygame.init()
         self.screen = pygame.display.set_mode((400,400))
 
-        self.allowed_keys = [
-            pygame.K_a,
-            pygame.K_b,
-            pygame.K_c,
-            pygame.K_d,
-            pygame.K_e,
-            pygame.K_f,
-            pygame.K_g,
-            pygame.K_h,
-            pygame.K_i,
-            pygame.K_j,
-            pygame.K_k,
-            pygame.K_l,
-            pygame.K_m,
-            pygame.K_n,
-            pygame.K_o,
-            pygame.K_p,
-            pygame.K_q,
-            pygame.K_r,
-            pygame.K_s,
-            pygame.K_t,
-            pygame.K_u,
-            pygame.K_v,
-            pygame.K_w,
-            pygame.K_x,
-            pygame.K_y,
-            pygame.K_z]
+        self.allowed_keys = [pygame.K_a, pygame.K_b, pygame.K_c, pygame.K_d, pygame.K_e, pygame.K_f,
+                             pygame.K_g, pygame.K_h, pygame.K_i, pygame.K_j, pygame.K_k, pygame.K_l,
+                             pygame.K_m, pygame.K_n, pygame.K_o, pygame.K_p, pygame.K_q, pygame.K_r,
+                             pygame.K_s, pygame.K_t, pygame.K_u, pygame.K_v, pygame.K_w, pygame.K_x, 
+                             pygame.K_y, pygame.K_z]
 
         self.client_socket = None
         self.server_addr = None
-   
-    def connect_server(self, player, server_addr=None):
+        self.other_players = {}
+
+        random.seed(datetime.datetime.now())
+        col = ( random.randint(0,255), 
+                random.randint(0,255),
+                random.randint(0,255))
+
+        self.player = Player(color = col)
+        self.player.name = ""
+        self.player.rect.x = 600
+        self.player.rect.y = 0
+        self.player.pid = -1
+
+        self.prev_state_player = Player(color = col)
+        self.prev_state_player.name = ""
+        self.prev_state_player.rect.x = 600
+        self.prev_state_player.rect.y = 0
+        self.prev_state_player.pid = -1
+
+        self.scoreboard = ScoreBoard()
+        self.scoreboard.add_player(self.player)
+
+        self.health_bar = TextMessage("HP: " + str(self.player.health), (0,0), 0)
+
+        self.gamestate = 0
+        self.timeleft = 0.0
+        self.timeleft_bar = TextMessage("{:.1f}".format(self.timeleft), 
+                                        (0,0),
+                                        0,
+                                        fontsize=20)
+
+    def connect_server(self, server_addr=None):
         global game_over
 
-        self.client_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        if server_addr is None:
-            self.server_addr = ('localhost', PORT)
-        else:
-            hostname, port = server_addr.split(':')
-            self.server_addr = (hostname, int(port))
-        self.client_socket.setblocking(0) 
+        if self.client_socket is None:
+            self.client_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            if server_addr is None:
+                self.server_addr = ('localhost', PORT)
+            else:
+                hostname, port = server_addr.split(':')
+                self.server_addr = (hostname, int(port))
+            self.client_socket.setblocking(0) 
+            #generate a magic value 
+            self.player.magic_value = random.randint(0,255)
+            print("created socket")
 
-        meta_sent = False
-        while (player.pid == -1 and not game_over):
-            read_rdy, write_rdy, in_err = select.select([self.client_socket],[self.client_socket],[self.client_socket], 0)
+        #attempt to send the connect packet.
+        send_socket(self.client_socket, ["player_meta", self.player.name, self.player.color,
+                                    self.player.magic_value], self.server_addr)
+    
+    def send_player_ready(self, server_addr=None):
+        send_socket(self.client_socket, ["player_ready", self.player.magic_value], self.server_addr)
+    
 
-            if (self.client_socket in write_rdy) and not meta_sent:
-                print("Attempting to connect!")
-                send_socket(self.client_socket, ["player_meta", player.name, player.color], self.server_addr)
-                meta_sent = True
-        
-            #don't start until we've got a pid
-            print(f"waiting for reply, meta sent? {meta_sent}")
-            msg, srv = rcv_socket(self.client_socket)
-            if msg is None:
-                print("GOT NONE WHY?")
-                continue
-            if msg[0] == "state":
-                print("i got state!")
-                for p in msg[1]:
-                    if p[1] == player.name:
-                        if p[0] != -1:
-                            player.pid = p[0]
-                        else:
-                            print("player name in use you sic fuk, chose another!")
-                            return -1
-        return player.pid
+    def ending(self):
+        global game_over
+        #render the name input box
+        ending_done = False
+        bgcolor = (200, 150, 100, 255)
+        tb = MultilineTextBox(bgcolor = bgcolor)
+        plr_list = []
+        old_plr_list = []
+        last_update = datetime.datetime.now()
+        connected = False
+        fps = 60
+        clock = pygame.time.Clock()
+        send_player_ready = False
+        name_locked = False
+         
+        while(not game_over and not ending_done):
+            dt = clock.tick_busy_loop(fps) / 1000.
+            self.screen.fill(bgcolor) 
+            self.screen.blit(self.scoreboard.get_scoreboard_surface(), (10,10))
+            pygame.display.flip()
+
+        quit()
 
     #select map, player name and bot opponents
-    def opening(self):
+    def opening(self, args):
         global game_over
         #render the name input box
         tib = TextInputBox("Name, then enter: ", (10,10))
+        active_box = tib
         opening_done = False
+        bgcolor = (150, 150, 200, 255)
+        tb = MultilineTextBox(bgcolor = bgcolor)
+        plr_list = []
+        old_plr_list = []
+        last_update = datetime.datetime.now()
+        connected = False
+        fps = 60
+        clock = pygame.time.Clock()
+        send_player_ready = False
+        name_locked = False
+
+        infotxt = TextMessage("Enter: lock name. Press b to begin!", (0,0), 0, fontsize=16)
+         
         while(not game_over and not opening_done):
-            self.screen.fill((255,255,100))
-            tib.render_text(self.screen)
+            dt = clock.tick_busy_loop(fps) / 1000.
+
+            self.screen.fill(bgcolor)
+            active_box.render_text(self.screen)
 
             for event in pygame.event.get():
                 if event.type == pygame.KEYDOWN:
                     if event.key == pygame.K_RETURN:
-                        return tib.entered_text
-                        print("OK, here we go. Enter pressed, starting game")
-                        if ret != -1:
-                            opening_done = True
+                        self.player.name = active_box.entered_text
+                        name_locked = True
                     if event.key == pygame.K_BACKSPACE:
-                        tib.del_char()
-                    if event.key in self.allowed_keys:
-                        tib.add_char(pygame.key.name(event.key))
+                        active_box.del_char()
+                    if name_locked:
+                        if event.key == pygame.K_b:
+                            send_player_ready = True
+                            #opening_done = True
+                    else:
+                        if event.key in self.allowed_keys:
+                            active_box.add_char(pygame.key.name(event.key))
             
+
+            if (datetime.datetime.now() - last_update).total_seconds() > 0.2:
+                if not send_player_ready:
+                    self.connect_server(server_addr=args.connect)
+                else:
+                    self.send_player_ready(server_addr=args.connect)
+
+                last_update = datetime.datetime.now()
+
+            self.receieve_state()   #update the other_players thingy. 
+            
+            plr_info = [(plr.name, plr.ready) for plr in self.other_players.values()]
+            plr_list = [p[0] + " ready!" if p[1] else p[0] for p in plr_info]
+
+            if self.player.pid != -1:
+                to_print = self.player.name
+                if self.player.ready:
+                    to_print = to_print + " ready!"
+                plr_list.append(to_print)
+
+            if set(plr_list) != set(old_plr_list):
+                print("update player list: ", plr_list)
+                tb.update(plr_list)
+                old_plr_list = plr_list
+
+            self.screen.blit(tb.get_surface(), (10, 100))
+            self.screen.blit(infotxt.get_surface(), (10, 250))
             pygame.display.flip()
-        #todo: input the server address (... :port)
-        return 
-   
-    def game(self):
+            
+            if self.gamestate > 0:
+                return
+
         return
+
+    #receieve all player states -- this happens only periodically.
+    def receieve_state(self):
+        if self.client_socket:
+            read_rdy, _, in_err = select.select([self.client_socket],[],[self.client_socket], 0)
+        else:
+            return 
+        for self.client_socket in read_rdy:
+            msg, srv = rcv_socket(self.client_socket)
+            if msg[0] == "state":
+                t_last_update = datetime.datetime.now()
+                for p in msg[1]:
+                    
+                    #check if we got back our own pid
+                    #usually first connect
+                    if self.player.pid == -1:
+                        if p[10] == self.player.magic_value:
+                            self.player.pid = p[0]
+
+                    #this is us.
+                    if p[0] == self.player.pid:
+                        #copy the old state 
+                        self.prev_state_player = copy.copy(self.player)
+
+                        self.player.rect.x = p[2]
+                        self.player.rect.y = p[3]
+                        self.player.velocity = [p[4],p[5]]
+                        self.player.bullets = p[6]
+                        self.player.score = p[7]
+                        self.player.hitters = p[8]
+                        self.player.magic_value = p[10]
+                        self.player.ready = p[11]
+                        self.gamestate = p[12]
+                        self.player.health = p[13]
+                        self.timeleft = p[14]
+
+                        if p[9] != self.player.color:
+                            self.player.update_color(p[9])
+
+                        continue
+
+                    #print("other player, got this:", p)
+                    if p[0] not in self.other_players.keys():
+                        print("made a new friend")
+                        self.other_players[p[0]] = Player()
+                        self.other_players[p[0]].name = p[1]
+                        self.other_players[p[0]].rect.x = p[2]
+                        self.other_players[p[0]].rect.y = p[3]
+                        self.other_players[p[0]].velocity = [p[4],p[5]]
+                        self.other_players[p[0]].bullets = p[6]
+                        self.other_players[p[0]].score = p[7]
+                        self.other_players[p[0]].hitters = p[8]
+                        self.other_players[p[0]].magic_value = p[10]
+                        self.other_players[p[0]].ready = p[11]
+
+                        if p[9] != self.other_players[p[0]].color:
+                            self.other_players[p[0]].update_color(p[9])
+
+     
+                        client.scoreboard.add_player(self.other_players[p[0]]) #todo: duplication...
+
+                    self.other_players[p[0]].name = p[1]
+                    self.other_players[p[0]].rect.x = p[2]
+                    self.other_players[p[0]].rect.y = p[3]
+                    self.other_players[p[0]].velocity = [p[4],p[5]]
+                    self.other_players[p[0]].bullets = p[6]
+                    self.other_players[p[0]].score = p[7]
+                    self.other_players[p[0]].hitters = p[8]
+                    self.other_players[p[0]].magic_value = p[10]
+                    self.other_players[p[0]].ready = p[11]
+
+                    if p[9] != self.other_players[p[0]].color:
+                        self.other_players[p[0]].update_color(p[9])
+
+                   
+            elif msg[0] == "player_disconnect":
+                print(self.other_players)
+                print("pid " + str(msg[1]) + " disconnected")
+                if msg[1] in self.other_players:
+                    client.scoreboard.remove_player(self.other_players[msg[1]])
+                    self.other_players.pop(msg[1])
+
 
 if __name__ == '__main__':
 
@@ -705,21 +1005,8 @@ if __name__ == '__main__':
         sys.exit(0)
 
     client = Client()
-    player_name = client.opening()
+    client.opening(args)
     
-    random.seed(datetime.datetime.now())
-    col = ( random.randint(0,255), 
-            random.randint(0,255),
-            random.randint(0,255))
-
-    player = Player(color = col)
-    player.name = player_name
-    player.rect.x = 600
-    player.rect.y = 0
-    other_players = {}
-
-    client.connect_server(player, server_addr=args.connect)
-
     gmap = GameMap(mapfile='map1.png')
     zoom = 1.0
     fps = 60.
@@ -727,22 +1014,19 @@ if __name__ == '__main__':
     
     write_rdy = []
     read_rdy = []
- 
-    scoreboard = ScoreBoard()
-    scoreboard.add_player(player)
+
     eventcount = 0
-
-
-    #overlay_texts = {}
 
     bullet_img = pygame.Surface((8,8))
     bullet_img.fill(pygame.Color(255,0,100))
 
     bullet_hits = defaultdict(list)
 
+    t_last_update = datetime.datetime.now()
     while not game_over:
         dt = clock.tick_busy_loop(fps) / 1000.
-
+        
+        client.receieve_state()
 
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
@@ -752,79 +1036,20 @@ if __name__ == '__main__':
                 keystate = pygame.key.get_pressed()
                 #send event to server
                 if client.client_socket in write_rdy:
-                    msg = ["event", eventcount, event.type, event.key, player.name, dt, keystate]
+                    msg = ["event", eventcount, event.type, event.key, client.player.name, dt, keystate]
                     send_socket(client.client_socket, msg, client.server_addr)
+                #but also update local player
+                client.player.react(event.type, event.key, keystate)
+                client.player.update(gmap, dt)
 
-
-        #receieve all player stats
-        read_rdy, _, in_err = select.select([client.client_socket],[],[client.client_socket], 0)
-
-        for client.client_socket in read_rdy:
-            msg, srv = rcv_socket(client.client_socket)
-            if msg[0] == "state":
-                for p in msg[1]:
-                    if p[1] == player.name:
-                        player.rect.x = p[2]
-                        player.rect.y = p[3]
-                        player.velocity = [p[4],p[5]]
-                        player.bullets = p[6]
-                        player.score = p[7]
-                        player.hitters = p[8]
-
-                        if p[9] != player.color:
-                            player.update_color(p[9])
-
-                        continue
-
-                    #print("other player, got this:", p)
-                    if p[0] not in other_players.keys():
-                        print("made a new friend")
-                        other_players[p[0]] = Player()
-                        other_players[p[0]].name = p[1]
-                        other_players[p[0]].rect.x = p[2]
-                        other_players[p[0]].rect.y = p[3]
-                        other_players[p[0]].velocity = [p[4],p[5]]
-                        other_players[p[0]].bullets = p[6]
-                        other_players[p[0]].score = p[7]
-                        other_players[p[0]].hitters = p[8]
-
-                        if p[9] != other_players[p[0]].color:
-                            other_players[p[0]].update_color(p[9])
-
-     
-                        scoreboard.add_player(other_players[p[0]]) #todo: duplication...
-
-                    other_players[p[0]].name = p[1]
-                    other_players[p[0]].rect.x = p[2]
-                    other_players[p[0]].rect.y = p[3]
-                    other_players[p[0]].velocity = [p[4],p[5]]
-                    other_players[p[0]].bullets = p[6]
-                    other_players[p[0]].score = p[7]
-                    other_players[p[0]].hitters = p[8]
-
-                    if p[9] != other_players[p[0]].color:
-                        other_players[p[0]].update_color(p[9])
-
-
-
-
-                   
-            elif msg[0] == "player_disconnect":
-                print(other_players)
-                print("pid " + str(msg[1]) + " disconnected")
-                if msg[1] in other_players:
-                    scoreboard.remove_player(other_players[msg[1]])
-                    other_players.pop(msg[1])
 
             #print(f"Message received: {pickle.loads(b''.join(chunks))}")
-            #todo: probably decode.
-
-
-        v_rect = gmap.blit_visible_surface((player.rect.x, player.rect.y), client.screen, zoom)
+       
+        v_rect = gmap.blit_visible_surface((client.player.rect.x, client.player.rect.y), client.screen, zoom)
 
         #draw the players own bullets... 
-        blitimg = player.img
-        for b in player.bullets:
+        blitimg = client.player.img
+        for b in client.player.bullets:
             #bullets is in world coords.
             dest_x = max(0, min(b.rect.x - v_rect.left, client.screen.get_width()))
             dest_y = max(0, min(b.rect.y - v_rect.top, client.screen.get_height()))
@@ -832,14 +1057,20 @@ if __name__ == '__main__':
 
         #also, were we hit by some bullet?
         #print(player.hitters)
-        for timeleft, h in player.hitters:
+        for timeleft, h in client.player.hitters:
             if timeleft > 0.0:
-                blitimg = player.hit_img
+                blitimg = client.player.hit_img
                 break #all we need to know.
 
-        client.screen.blit(blitimg, (player.rect.x - v_rect.left, player.rect.y - v_rect.top))
+        client.screen.blit(blitimg, (client.player.rect.x - v_rect.left, client.player.rect.y - v_rect.top))
 
-        for name, plr in other_players.items():
+        #in case we haven't gotten a new update yet, let's predict where the clients are, assuming
+        #they kept the velocity we saw last.
+        for name, plr in client.other_players.items():
+            if (datetime.datetime.now() - t_last_update).total_seconds() > dt:
+                plr.velocity[1] += 1000. * dt   #is this even correct. i don't know. 
+                plr.rect.x += plr.velocity[0] * dt
+                plr.rect.y += plr.velocity[1] * dt
 
             blitimg = plr.img
             for b in plr.bullets:
@@ -856,13 +1087,28 @@ if __name__ == '__main__':
             client.screen.blit(blitimg, (plr.rect.x - v_rect.left, plr.rect.y - v_rect.top))
 
 
-        scoreboard.update_scoreboard_surface()
-        client.screen.blit(scoreboard.get_scoreboard_surface(), (10,10))
+        #draw the hud
+        if client.prev_state_player.health != client.player.health:
+            client.health_bar.update_text("HP: " + str(client.player.health))
+
+        client.timeleft_bar.update_text("{:.1f}".format(client.timeleft))
+        client.screen.blit(client.timeleft_bar.get_surface(), (180, 10))
+
+        hp_srf = client.health_bar.get_surface()
+        client.screen.blit(hp_srf, (310, 10))
+    
+        if client.gamestate == 2:
+            client.ending()
+        else:
+            client.scoreboard.update_scoreboard_surface()
+            client.screen.blit(client.scoreboard.get_scoreboard_surface(), (10,10))
+        
+
 
         pygame.display.flip()
 
     #we out
     print("Someone killd the game. See ya")
     #let's try to disconnect nicely. who cares if we can't.
-    send_socket(client.client_socket, ["player_disconnect", player.name, player.pid], client.server_addr)
+    send_socket(client.client_socket, ["player_disconnect", client.player.name, client.player.pid], client.server_addr)
     pygame.quit()
