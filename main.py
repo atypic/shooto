@@ -329,8 +329,9 @@ class ShootoServer():
         self.settings = {}
         self.settings['cooldown'] = 0.5
         self.settings['initial_hp'] = 5
+        self.settings['round_length'] = 5
 
-        self.timeleft = 10
+        self.timeleft = self.settings['round_length']
 
     def handle_queues(self):
         if len(self.meta_queue) > 0:
@@ -419,11 +420,23 @@ class ShootoServer():
             if self.gamestate == 0:
                 ready_states = [p.ready for p in self.players.values()]
                 if len(ready_states) > 0 and False not in ready_states:
+                    self.timeleft = self.settings['round_length']
                     self.gamestate = 1
 
+
+            print(self.gamestate)
             if self.gamestate == 1:
                 if self.timeleft < 0:
                     self.gamestate = 2
+                    self.timeleft = 2
+
+            if self.gamestate == 2:
+                if self.timeleft < 0:
+                    for p in self.players.keys():
+                        self.players[p].ready = False
+                        self.players[p].health = self.settings['initial_hp']
+                        self.players[p].score = 0
+                        self.gamestate = 0
 
             diff = datetime.datetime.now() - time_last_update
 
@@ -452,7 +465,7 @@ class ShootoServer():
             #handling done.
             diff = datetime.datetime.now() - time_last_update_2
             if diff.total_seconds() * 1000 > 20:
-                if self.gamestate == 1:
+                if self.gamestate == 1 or self.gamestate == 2:
                     self.timeleft -= diff.total_seconds()
                 self.update_clients()
                 time_last_update_2 = datetime.datetime.now()
@@ -753,6 +766,8 @@ class Client():
         self.server_addr = None
         self.other_players = {}
 
+        self.args = None
+
         random.seed(datetime.datetime.now())
         col = ( random.randint(0,255), 
                 random.randint(0,255),
@@ -824,15 +839,20 @@ class Client():
             dt = clock.tick_busy_loop(fps) / 1000.
             self.screen.fill(bgcolor) 
             self.screen.blit(self.scoreboard.get_scoreboard_surface(), (10,10))
+            self.receieve_state()
             pygame.display.flip()
 
-        quit()
+            if self.gamestate == 0:
+                self.opening()
+
 
     #select map, player name and bot opponents
-    def opening(self, args):
+    def opening(self):
         global game_over
         #render the name input box
         tib = TextInputBox("Name, then enter: ", (10,10))
+        tib.entered_text = self.player.name
+
         active_box = tib
         opening_done = False
         bgcolor = (150, 150, 200, 255)
@@ -897,11 +917,111 @@ class Client():
             self.screen.blit(tb.get_surface(), (10, 100))
             self.screen.blit(infotxt.get_surface(), (10, 250))
             pygame.display.flip()
-            
-            if self.gamestate > 0:
-                return
+           
+            #go game
+            if self.gamestate == 1:
+                self.main_game()
 
         return
+
+    def main_game(self):
+        global game_over
+        gmap = GameMap(mapfile='map1.png')
+        zoom = 1.0
+        fps = 60.
+        clock = pygame.time.Clock()
+        
+        write_rdy = []
+        read_rdy = []
+
+        eventcount = 0
+
+        bullet_img = pygame.Surface((8,8))
+        bullet_img.fill(pygame.Color(255,0,100))
+
+
+        t_last_update = datetime.datetime.now()
+        while not game_over:
+            dt = clock.tick_busy_loop(fps) / 1000.
+            
+            client.receieve_state()
+
+            for event in pygame.event.get():
+                if event.type == pygame.QUIT:
+                    game_over = True
+                if event.type == pygame.KEYDOWN or event.type == pygame.KEYUP:
+                    _, write_rdy, in_err = select.select([],[client.client_socket],[client.client_socket], 0)
+                    keystate = pygame.key.get_pressed()
+                    #send event to server
+                    if client.client_socket in write_rdy:
+                        msg = ["event", eventcount, event.type, event.key, client.player.name, dt, keystate]
+                        send_socket(client.client_socket, msg, client.server_addr)
+                    #but also update local player
+                    client.player.react(event.type, event.key, keystate)
+                    client.player.update(gmap, dt)
+
+
+                #print(f"Message received: {pickle.loads(b''.join(chunks))}")
+           
+            v_rect = gmap.blit_visible_surface((client.player.rect.x, client.player.rect.y), client.screen, zoom)
+
+            #draw the players own bullets... 
+            blitimg = client.player.img
+            for b in client.player.bullets:
+                #bullets is in world coords.
+                dest_x = max(0, min(b.rect.x - v_rect.left, client.screen.get_width()))
+                dest_y = max(0, min(b.rect.y - v_rect.top, client.screen.get_height()))
+                client.screen.blit(bullet_img, (dest_x, dest_y))
+
+            #also, were we hit by some bullet?
+            #print(player.hitters)
+            for timeleft, h in client.player.hitters:
+                if timeleft > 0.0:
+                    blitimg = client.player.hit_img
+                    break #all we need to know.
+
+            client.screen.blit(blitimg, (client.player.rect.x - v_rect.left, client.player.rect.y - v_rect.top))
+
+            #in case we haven't gotten a new update yet, let's predict where the clients are, assuming
+            #they kept the velocity we saw last.
+            for name, plr in client.other_players.items():
+                if (datetime.datetime.now() - t_last_update).total_seconds() > dt:
+                    plr.velocity[1] += 1000. * dt   #is this even correct. i don't know. 
+                    plr.rect.x += plr.velocity[0] * dt
+                    plr.rect.y += plr.velocity[1] * dt
+
+                blitimg = plr.img
+                for b in plr.bullets:
+                    #bullets is in world coords.
+                    dest_x = max(0, min(b.rect.x - v_rect.left, client.screen.get_width()))
+                    dest_y = max(0, min(b.rect.y - v_rect.top, client.screen.get_height()))
+                    client.screen.blit(bullet_img, (dest_x, dest_y))
+
+                for timeleft, h in plr.hitters:
+                    if timeleft > 0.0:
+                        blitimg = plr.hit_img
+                        break #all we need to know.
+
+                client.screen.blit(blitimg, (plr.rect.x - v_rect.left, plr.rect.y - v_rect.top))
+
+
+            #draw the hud
+            if client.prev_state_player.health != client.player.health:
+                client.health_bar.update_text("HP: " + str(client.player.health))
+
+            client.timeleft_bar.update_text("{:.1f}".format(client.timeleft))
+            client.screen.blit(client.timeleft_bar.get_surface(), (180, 10))
+
+            hp_srf = client.health_bar.get_surface()
+            client.screen.blit(hp_srf, (310, 10))
+        
+            if client.gamestate == 2:
+                client.ending()
+            else:
+                client.scoreboard.update_scoreboard_surface()
+                client.screen.blit(client.scoreboard.get_scoreboard_surface(), (10,10))
+
+            pygame.display.flip()
 
     #receieve all player states -- this happens only periodically.
     def receieve_state(self):
@@ -1005,110 +1125,13 @@ if __name__ == '__main__':
         sys.exit(0)
 
     client = Client()
-    client.opening(args)
+    client.args = args
+    client.opening()
     
-    gmap = GameMap(mapfile='map1.png')
-    zoom = 1.0
-    fps = 60.
-    clock = pygame.time.Clock()
-    
-    write_rdy = []
-    read_rdy = []
-
-    eventcount = 0
-
-    bullet_img = pygame.Surface((8,8))
-    bullet_img.fill(pygame.Color(255,0,100))
-
-    bullet_hits = defaultdict(list)
-
-    t_last_update = datetime.datetime.now()
-    while not game_over:
-        dt = clock.tick_busy_loop(fps) / 1000.
-        
-        client.receieve_state()
-
-        for event in pygame.event.get():
-            if event.type == pygame.QUIT:
-                game_over = True
-            if event.type == pygame.KEYDOWN or event.type == pygame.KEYUP:
-                _, write_rdy, in_err = select.select([],[client.client_socket],[client.client_socket], 0)
-                keystate = pygame.key.get_pressed()
-                #send event to server
-                if client.client_socket in write_rdy:
-                    msg = ["event", eventcount, event.type, event.key, client.player.name, dt, keystate]
-                    send_socket(client.client_socket, msg, client.server_addr)
-                #but also update local player
-                client.player.react(event.type, event.key, keystate)
-                client.player.update(gmap, dt)
-
-
-            #print(f"Message received: {pickle.loads(b''.join(chunks))}")
-       
-        v_rect = gmap.blit_visible_surface((client.player.rect.x, client.player.rect.y), client.screen, zoom)
-
-        #draw the players own bullets... 
-        blitimg = client.player.img
-        for b in client.player.bullets:
-            #bullets is in world coords.
-            dest_x = max(0, min(b.rect.x - v_rect.left, client.screen.get_width()))
-            dest_y = max(0, min(b.rect.y - v_rect.top, client.screen.get_height()))
-            client.screen.blit(bullet_img, (dest_x, dest_y))
-
-        #also, were we hit by some bullet?
-        #print(player.hitters)
-        for timeleft, h in client.player.hitters:
-            if timeleft > 0.0:
-                blitimg = client.player.hit_img
-                break #all we need to know.
-
-        client.screen.blit(blitimg, (client.player.rect.x - v_rect.left, client.player.rect.y - v_rect.top))
-
-        #in case we haven't gotten a new update yet, let's predict where the clients are, assuming
-        #they kept the velocity we saw last.
-        for name, plr in client.other_players.items():
-            if (datetime.datetime.now() - t_last_update).total_seconds() > dt:
-                plr.velocity[1] += 1000. * dt   #is this even correct. i don't know. 
-                plr.rect.x += plr.velocity[0] * dt
-                plr.rect.y += plr.velocity[1] * dt
-
-            blitimg = plr.img
-            for b in plr.bullets:
-                #bullets is in world coords.
-                dest_x = max(0, min(b.rect.x - v_rect.left, client.screen.get_width()))
-                dest_y = max(0, min(b.rect.y - v_rect.top, client.screen.get_height()))
-                client.screen.blit(bullet_img, (dest_x, dest_y))
-
-            for timeleft, h in plr.hitters:
-                if timeleft > 0.0:
-                    blitimg = plr.hit_img
-                    break #all we need to know.
-
-            client.screen.blit(blitimg, (plr.rect.x - v_rect.left, plr.rect.y - v_rect.top))
-
-
-        #draw the hud
-        if client.prev_state_player.health != client.player.health:
-            client.health_bar.update_text("HP: " + str(client.player.health))
-
-        client.timeleft_bar.update_text("{:.1f}".format(client.timeleft))
-        client.screen.blit(client.timeleft_bar.get_surface(), (180, 10))
-
-        hp_srf = client.health_bar.get_surface()
-        client.screen.blit(hp_srf, (310, 10))
-    
-        if client.gamestate == 2:
-            client.ending()
-        else:
-            client.scoreboard.update_scoreboard_surface()
-            client.screen.blit(client.scoreboard.get_scoreboard_surface(), (10,10))
-        
-
-
-        pygame.display.flip()
-
     #we out
     print("Someone killd the game. See ya")
     #let's try to disconnect nicely. who cares if we can't.
     send_socket(client.client_socket, ["player_disconnect", client.player.name, client.player.pid], client.server_addr)
     pygame.quit()
+
+
