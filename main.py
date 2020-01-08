@@ -125,7 +125,7 @@ class Player(pygame.sprite.Sprite):
 
         #these are things that are fired and needs updating when time ticks.
         self.bullets = []
-        self.name = "UnnamedPlayer"
+        self.name = ""
         self.score = 0
         self.ready = False
         self.health = hp
@@ -135,8 +135,6 @@ class Player(pygame.sprite.Sprite):
 
         self.spawnpoint = 0
         self.cooldown = 0
-
-
 
     def update_color(self, col):
         self.color = col
@@ -329,7 +327,7 @@ class ShootoServer():
         self.settings = {}
         self.settings['cooldown'] = 0.5
         self.settings['initial_hp'] = 5
-        self.settings['round_length'] = 5
+        self.settings['round_length'] = args.timelimit if args.timelimit else 60
 
         self.timeleft = self.settings['round_length']
 
@@ -416,15 +414,12 @@ class ShootoServer():
             #dont tick time if game hasn't even started yet.
             self.receive_from_clients()
 
-            #chech if everyone is ready!
             if self.gamestate == 0:
                 ready_states = [p.ready for p in self.players.values()]
                 if len(ready_states) > 0 and False not in ready_states:
                     self.timeleft = self.settings['round_length']
                     self.gamestate = 1
 
-
-            print(self.gamestate)
             if self.gamestate == 1:
                 if self.timeleft < 0:
                     self.gamestate = 2
@@ -910,7 +905,7 @@ class Client():
                 plr_list.append(to_print)
 
             if set(plr_list) != set(old_plr_list):
-                print("update player list: ", plr_list)
+                print("Update player list: ", plr_list)
                 tb.update(plr_list)
                 old_plr_list = plr_list
 
@@ -1023,6 +1018,26 @@ class Client():
 
             pygame.display.flip()
 
+    def update_player(self, player, state):
+        #don't update our own name because this breaks the opening :-)
+        if player != self.player:
+            player.name = state[1]
+
+        player.rect.x = state[2]
+        player.rect.y = state[3]
+        player.velocity = [state[4],state[5]]
+        player.bullets = state[6]
+        player.score = state[7]
+        player.hitters = state[8]
+        player.magic_value = state[10]
+        player.ready = state[11]
+        self.gamestate = state[12]
+        player.health = state[13]
+        self.timeleft = state[14]
+
+        if state[9] != self.player.color:
+            self.player.update_color(state[9])
+
     #receieve all player states -- this happens only periodically.
     def receieve_state(self):
         if self.client_socket:
@@ -1033,8 +1048,10 @@ class Client():
             msg, srv = rcv_socket(self.client_socket)
             if msg[0] == "state":
                 t_last_update = datetime.datetime.now()
+
+                #this is already decoded
                 for p in msg[1]:
-                    
+                    pid = p[0] 
                     #check if we got back our own pid
                     #usually first connect
                     if self.player.pid == -1:
@@ -1042,60 +1059,24 @@ class Client():
                             self.player.pid = p[0]
 
                     #this is us.
-                    if p[0] == self.player.pid:
+                    if pid == self.player.pid:
                         #copy the old state 
                         self.prev_state_player = copy.copy(self.player)
 
-                        self.player.rect.x = p[2]
-                        self.player.rect.y = p[3]
-                        self.player.velocity = [p[4],p[5]]
-                        self.player.bullets = p[6]
-                        self.player.score = p[7]
-                        self.player.hitters = p[8]
-                        self.player.magic_value = p[10]
-                        self.player.ready = p[11]
-                        self.gamestate = p[12]
-                        self.player.health = p[13]
-                        self.timeleft = p[14]
-
-                        if p[9] != self.player.color:
-                            self.player.update_color(p[9])
+                        self.update_player(self.player, p)
 
                         continue
 
-                    #print("other player, got this:", p)
-                    if p[0] not in self.other_players.keys():
-                        print("made a new friend")
-                        self.other_players[p[0]] = Player()
-                        self.other_players[p[0]].name = p[1]
-                        self.other_players[p[0]].rect.x = p[2]
-                        self.other_players[p[0]].rect.y = p[3]
-                        self.other_players[p[0]].velocity = [p[4],p[5]]
-                        self.other_players[p[0]].bullets = p[6]
-                        self.other_players[p[0]].score = p[7]
-                        self.other_players[p[0]].hitters = p[8]
-                        self.other_players[p[0]].magic_value = p[10]
-                        self.other_players[p[0]].ready = p[11]
-
-                        if p[9] != self.other_players[p[0]].color:
-                            self.other_players[p[0]].update_color(p[9])
-
-     
-                        client.scoreboard.add_player(self.other_players[p[0]]) #todo: duplication...
-
-                    self.other_players[p[0]].name = p[1]
-                    self.other_players[p[0]].rect.x = p[2]
-                    self.other_players[p[0]].rect.y = p[3]
-                    self.other_players[p[0]].velocity = [p[4],p[5]]
-                    self.other_players[p[0]].bullets = p[6]
-                    self.other_players[p[0]].score = p[7]
-                    self.other_players[p[0]].hitters = p[8]
-                    self.other_players[p[0]].magic_value = p[10]
-                    self.other_players[p[0]].ready = p[11]
-
-                    if p[9] != self.other_players[p[0]].color:
-                        self.other_players[p[0]].update_color(p[9])
-
+                    #first time we see this player
+                    if pid not in self.other_players.keys():
+                        new_player = Player()
+                        self.other_players[pid] = new_player
+                        self.update_player(new_player, p)
+                        client.scoreboard.add_player(new_player) #todo: duplication...
+                        print(f"New player with pid {pid} connected!")
+    
+                    else:
+                        self.update_player(self.other_players[pid], p)
                    
             elif msg[0] == "player_disconnect":
                 print(self.other_players)
@@ -1113,8 +1094,8 @@ if __name__ == '__main__':
     signal.signal(signal.SIGINT, signal_handler)
 
     parser = argparse.ArgumentParser()
-    parser.add_argument("-s", "--server",  action="store", help="Start the server at given ip addr\
-            interface")
+    parser.add_argument("-s", "--server",  action="store", help="Start the server at given ip addr interface")
+    parser.add_argument("-t", "--timelimit", action="store")
     parser.add_argument("-c", "--connect",  action="store", help="Start the server")
 
     args = parser.parse_args()
@@ -1133,5 +1114,3 @@ if __name__ == '__main__':
     #let's try to disconnect nicely. who cares if we can't.
     send_socket(client.client_socket, ["player_disconnect", client.player.name, client.player.pid], client.server_addr)
     pygame.quit()
-
-
