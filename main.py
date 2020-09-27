@@ -21,8 +21,17 @@ import numpy as np
 
 import signal
 import sys
+import enum
 from PIL import Image
 
+
+class PlayerState(enum.Enum):
+    active = 0
+    dead = 1
+
+class GameState(enum.Enum):
+    lobby = 0
+    running = 1
 
 class GameMap():
     def __init__(self, mapfile=None, size=(2000,1000), server=False):
@@ -48,7 +57,7 @@ class GameMap():
         self.tile_height = 1
 
         self.spawnpoints = [[0,0],
-                            [self.size[0]-16, self.size[1] - 200],
+                            [self.size[0]-16, self.size[1] - 1000],
                             [self.size[0]/2, self.size[1]/2]]
 
     def blit_visible_surface(self, camera_pos, viewport, zoom=1.0):
@@ -114,7 +123,10 @@ class Player(pygame.sprite.Sprite):
         self.hit_img = pygame.Surface((16, 16))
         self.hit_img.fill((255, 255, 255))
 
-        self.death_anim = None
+
+        self.death_anim = Animation(fps=30)
+        self.death_anim.load_frames_sheet((8,8), 'particlefx_12.png', scale=3.0)
+
 
         self.rect = pygame.Rect(pos, (16, 16))
         self.posx = 0.0
@@ -122,7 +134,7 @@ class Player(pygame.sprite.Sprite):
 
         #these are things that are fired and needs updating when time ticks.
         self.bullets = []
-        self.name = ""
+        self.name = "Jumbo"
         self.score = 0
         self.ready = False
         self.health = hp
@@ -132,6 +144,7 @@ class Player(pygame.sprite.Sprite):
 
         self.spawnpoint = 0
         self.cooldown = 0
+        self.status = PlayerState.active
 
     def update_color(self, col):
         self.color = col
@@ -195,6 +208,7 @@ class Player(pygame.sprite.Sprite):
 
 
     #remember mappy needs to be a pixel array
+    #update the state of the player based on inputs and other external factors
     def update(self, mappy, dt):
         self.grounded = False
         self.velocity[1] += self.gravity * dt   #gravity, but why is this fucked?
@@ -226,7 +240,6 @@ class Player(pygame.sprite.Sprite):
                     self.grounded = True
                     break
 
-        #px.close()
 
         #update bullets
         for b in self.bullets:
@@ -242,6 +255,15 @@ class Player(pygame.sprite.Sprite):
                 self.hitters[idx][0] = max(0.0, timeleft - dt)
         for idx in set(to_remove):
             self.hitters.pop(idx)
+
+        #if we died 
+        if self.status == PlayerState.dead:
+            if self.cooldown == 0:
+                self.status = PlayerState.active
+                sp = random.randrange(0, len(mappy.spawnpoints))
+                self.rect.x = mappy.spawnpoints[sp][0]
+                self.rect.y = mappy.spawnpoints[sp][1]
+
 
     def bullet_collisions(self, mappy, dt):
         #px = pygame.PixelArray(mappy.map)
@@ -291,6 +313,7 @@ import pickle
 
 from collections import defaultdict
 
+
 class ShootoServer():
     def __init__(self, address=None):
         #socket and shit.
@@ -322,7 +345,7 @@ class ShootoServer():
         self.gamestate = 0
 
         self.settings = {}
-        self.settings['cooldown'] = 0.5
+        self.settings['cooldown'] = 1
         self.settings['initial_hp'] = 5
         self.settings['round_length'] = args.timelimit if args.timelimit else 60
 
@@ -332,6 +355,7 @@ class ShootoServer():
         if len(self.meta_queue) > 0:
             for cliaddr, meta in self.meta_queue:
                 if cliaddr not in self.cliaddr_to_pid.keys():
+                    print("SERVER: Got meta package:", meta)
                     self.player_factory(cliaddr,
                                     meta[1],
                                     meta[2],
@@ -355,6 +379,7 @@ class ShootoServer():
 
             self.event_queue = []
 
+    #check if the bullets of pid hit pid2
     def player_collision(self, pid, pid2):
         #check for collisions against other clients.
         #no self collissions please
@@ -375,12 +400,13 @@ class ShootoServer():
                         #did we die? if so, set a new spawnpoint, but don't move the
                         #player until a cooldown.
                         if self.players[pid2].health == 0:
+                            self.players[pid2].status = PlayerState.dead
                             self.players[pid].score += 1.0
                             print(self.players[pid2], " died!")
                             sp = random.randrange(0, len(self.gmap.spawnpoints))
-                            self.players[pid2].rect.x = self.gmap.spawnpoints[sp][0]
-                            self.players[pid2].rect.y = self.gmap.spawnpoints[sp][1]
-                            print("new position: ", self.gmap.spawnpoints[sp])
+                            #self.players[pid2].rect.x = self.gmap.spawnpoints[sp][0]
+                            #self.players[pid2].rect.y = self.gmap.spawnpoints[sp][1]
+                            #print("new position: ", self.gmap.spawnpoints[sp])
                             self.players[pid2].cooldown = self.settings['cooldown']
                             self.players[pid2].health = self.settings['initial_hp']
 
@@ -445,9 +471,9 @@ class ShootoServer():
 
 
                 for pid in self.players.keys():
+                    self.players[pid].cooldown = max(0, self.players[pid].cooldown - diff.total_seconds())
                     self.players[pid].update(self.gmap, diff.total_seconds()) #collision detection.
                     self.players[pid].updates_without_events += 1
-                    self.players[pid].cooldown = max(0, self.players[pid].cooldown - diff.total_seconds())
 
                     for pid2 in self.players.keys():
                         self.player_collision(pid, pid2)
@@ -492,9 +518,9 @@ class ShootoServer():
 
         self.connected_clients.append(cliaddr)
         self.pid += 1
-        print(f"Created a new player: {name} at {cliaddr}")
+        print(f"SERVER: Created a new player: {name} at {cliaddr}")
 
-        return
+        return 
 
     def receive_from_clients(self):
         dat, cliaddr = rcv_socket(self.socket)
@@ -508,9 +534,9 @@ class ShootoServer():
             #check if we have already made a player for this client.
             self.meta_queue.append((cliaddr, dat))
         elif dat[0] == "player_ready":
-            #check if we have already made a player for this client.
             pid = self.cliaddr_to_pid[cliaddr]
             self.players[pid].ready = True
+            self.players[pid].name = dat[1]  #might have update the name
         elif dat[0] == "player_disconnect":
             self.connected_clients.remove(cliaddr)
             pid = self.cliaddr_to_pid[cliaddr]
@@ -533,7 +559,9 @@ class ShootoServer():
                             p.ready,
                             self.gamestate,
                             p.health,
-                            self.timeleft) for k, p in
+                            self.timeleft,
+                            p.cooldown,
+                            p.status) for k, p in
             self.players.items()]]
         to_remove = []
         for c in self.connected_clients:
@@ -769,8 +797,9 @@ class Client():
                 random.randint(0,255),
                 random.randint(0,255))
 
+        #makes a new player...
         self.player = Player(color = col)
-        self.player.name = ""
+        self.player.name = "Jumbo"
         self.player.rect.x = 600
         self.player.rect.y = 0
         self.player.pid = -1
@@ -780,10 +809,6 @@ class Client():
         self.prev_state_player.rect.x = 600
         self.prev_state_player.rect.y = 0
         self.prev_state_player.pid = -1
-
-        self.player.death_anim = Animation()
-        self.player.death_anim.load_frames_sheet((8,8), 'particlefx_12.png')
-
 
         self.scoreboard = ScoreBoard()
         self.scoreboard.add_player(self.player)
@@ -826,15 +851,15 @@ class Client():
                 self.server_addr = (hostname, int(port))
             self.client_socket.setblocking(0)
             #generate a magic value
-            self.player.magic_value = random.randint(0,255)
-            print("created socket")
+            self.player.magic_value = random.randint(0,10000)
+            print(f"CLIENT: created socket, my magic number is {self.player.magic_value}")
 
         #attempt to send the connect packet.
         send_socket(self.client_socket, ["player_meta", self.player.name, self.player.color,
                                     self.player.magic_value], self.server_addr)
 
     def send_player_ready(self, server_addr=None):
-        send_socket(self.client_socket, ["player_ready", self.player.magic_value], self.server_addr)
+        send_socket(self.client_socket, ["player_ready", self.player.name, self.player.magic_value], self.server_addr)
 
     #gamestate 2
     def ending(self):
@@ -871,14 +896,19 @@ class Client():
         #_tib = pygame_menu.widgets.TextInput(label="Test", textinput_id='name_input')
 
         #send_player_ready = False
-
-        def menu_start_game(self):
+        print(self.player.name)
+        def menu_start_game(self, text):
+            self.player.ready = True
             self.send_player_ready(server_addr=self.args.connect)
-            self.gamestate = 1
+            #self.gamestate = 1
 
-        menu = pygame_menu.Menu(400,400, 'lolgame')
-        menu.add_text_input('Player name: ', default='Someone')
-        menu.add_button('Begin!', menu_start_game, self)
+        def menu_player_change_name(text):
+            self.player.name = text
+
+        menu = pygame_menu.Menu(400,400, 'Shooto!')
+        menu.add_text_input('Player name: ', default=self.player.name, textinput_id="player_name",
+                onchange=menu_player_change_name)
+        menu.add_button('Mark ready!', menu_start_game, self, menu.get_widget("player_name").get_value())
         menu.add_label("Players: ", label_id='playerlist')
 
         #active_box = tib
@@ -893,10 +923,7 @@ class Client():
         clock = pygame.time.Clock()
         name_locked = False
 
-        #infotxt = TextMessage("Enter: lock name. Press b to begin!", (0,0), 0, fontsize=16)
-
-        #def draw_bg():
-
+        #this is the lobby state...
         while self.gamestate == 0:
             dt = clock.tick_busy_loop(fps) / 1000.
             self.screen.fill(bgcolor)
@@ -912,23 +939,26 @@ class Client():
 
             self.receieve_state()   #update the other_players thingy.
 
-            plr_info = [(plr.name, plr.ready) for plr in self.other_players.values()]
-            plr_list = [p[0] + " ready!" if p[1] else p[0] for p in plr_info]
+            #Now we create a list of all the players, and jankily mark the ready players as ready.
+            plr_info = [(plr.name, plr.ready, plr.pid) for plr in self.other_players.values()]
+            plr_list = [(p[2], p[0] + " ready!") if p[1] else (p[2], p[0]) for p in plr_info]
 
+            #I AM SORRY ABOUT THIS FUTURE ME, I SUCK AND THIS SORTA WORKS so... i kept it.
+            #Add ourselves to the list of players.
             if self.player.pid != -1:
                 to_print = self.player.name
                 if self.player.ready:
                     to_print = to_print + " ready!"
-                plr_list.append(to_print)
+                plr_list.append((self.player.pid, to_print))
 
-            if set(plr_list) != set(old_plr_list):
-                print("Update player list: ", plr_list)
-                #tb.update(plr_list)
-                menu.get_widget('playerlist', False).label = to_print
-                old_plr_list = plr_list
+            #nowwww we need to be careful when we update the list of players.
+            for pid, name in plr_list:
+                label_id = f"lobbylist_{pid}"
+                if menu.get_widget(label_id):
+                    menu.get_widget(label_id).set_title(name)
+                else:
+                    menu.add_label(name, label_id=label_id)
 
-        #    self.screen.blit(tb.get_surface(), (10, 100))
-        #    self.screen.blit(infotxt.get_surface(), (10, 250))
             pygame.display.flip()
 
     #gamestate 1
@@ -989,15 +1019,25 @@ class Client():
                     blitimg = client.player.hit_img
                     break #all we need to know.
 
-            client.screen.blit(blitimg, (client.player.rect.x - v_rect.left, client.player.rect.y - v_rect.top))
 
+            if client.player.status == PlayerState.dead:
+                death_anim_pos = (client.player.rect.centerx -
+                        client.player.death_anim.get_center_offset()[0] - v_rect.left,
+                                  client.player.rect.centery -
+                                      client.player.death_anim.get_center_offset()[1] - v_rect.top)
+                client.screen.blit(client.player.death_anim.next_frame(dt), death_anim_pos)
+                if client.player.cooldown == 0:
+                    client.player.death_anim.reset()
+            else:
+                client.screen.blit(blitimg, (client.player.rect.x - v_rect.left, client.player.rect.y - v_rect.top))
+                
             #in case we haven't gotten a new update yet, let's predict where the clients are, assuming
             #they kept the velocity we saw last.
             for name, plr in client.other_players.items():
                 if (datetime.datetime.now() - t_last_update).total_seconds() > dt:
                     plr.velocity[1] += 1000. * dt   #is this even correct. i don't know.
-                    plr.rect.x += plr.velocity[0] * dt
-                    plr.rect.y += plr.velocity[1] * dt
+                    plr.rect.x += int(plr.velocity[0] * dt)
+                    plr.rect.y += int(plr.velocity[1] * dt)
 
                 blitimg = plr.img
                 for b in plr.bullets:
@@ -1011,15 +1051,17 @@ class Client():
                         blitimg = plr.hit_img
                         break #all we need to know.
 
-                client.screen.blit(blitimg, (plr.rect.x - v_rect.left, plr.rect.y - v_rect.top))
 
-            if client.player.health <= 0:
-                death_anim_pos = (client.player.rect.centerx -
-                        client.player.death_anim.get_center_offset()[0] - v_rect.left,
-                                  client.player.rect.centery -
-                                      client.player.death_anim.get_center_offset()[1] - v_rect.top)
-                print(death_anim_pos)
-                client.screen.blit(client.player.death_anim.next_frame(dt), death_anim_pos)
+                if plr.status == PlayerState.dead:
+                    death_anim_pos = (plr.rect.centerx -
+                            plr.death_anim.get_center_offset()[0] - v_rect.left,
+                                      plr.rect.centery -
+                                          plr.death_anim.get_center_offset()[1] - v_rect.top)
+                    client.screen.blit(plr.death_anim.next_frame(dt), death_anim_pos)
+                    if plr.cooldown == 0:
+                        plr.death_anim.reset()
+                else:
+                    client.screen.blit(blitimg, (plr.rect.x - v_rect.left, plr.rect.y - v_rect.top))
                     
 
             #draw the hud
@@ -1056,6 +1098,8 @@ class Client():
         self.gamestate = state[12]
         player.health = state[13]
         self.timeleft = state[14]
+        player.cooldown = state[15]
+        player.status = state[16]
 
         if state[9] != self.player.color:
             self.player.update_color(state[9])
@@ -1074,28 +1118,33 @@ class Client():
                 #this is already decoded
                 for p in msg[1]:
                     pid = p[0]
-                    #check if we got back our own pid
+
+                    #PIDs are generated on the server, so we don't have one initially.
+                    #but we do send a magic value that identifies ourselves so we know which PID is
+                    #ours. This is hacky, yes.
                     #usually first connect
                     if self.player.pid == -1:
                         if p[10] == self.player.magic_value:
                             self.player.pid = p[0]
+                        else:
+                            print(f"CLIENT: Got a pid with -1 and not recognized magic value")
 
-                    #this is us.
+                    #ok, so we have the magic value (todo: this should really be the PID... it makes
+                    #more sense for the clients to decide this themselves.
                     if pid == self.player.pid:
-                        #copy the old state
+                        #The previous state is used for various stuff, like checking if we need
+                        #to redraw the HUD. Thus copy it.
                         self.prev_state_player = copy.copy(self.player)
-
                         self.update_player(self.player, p)
-
                         continue
 
-                    #first time we see this player
+                    #first time we see this PID, so we need to create the structures to keep it.
                     if pid not in self.other_players.keys():
                         new_player = Player()
                         self.other_players[pid] = new_player
                         self.update_player(new_player, p)
                         client.scoreboard.add_player(new_player) #todo: duplication...
-                        print(f"New player with pid {pid} connected!")
+                        print(f"CLIENT: New player with pid {pid} connected!")
 
                     else:
                         self.update_player(self.other_players[pid], p)
@@ -1126,6 +1175,10 @@ class Animation():
     def get_size(self):
         return (self.frame_width, self.frame_height)
 
+    def reset(self):
+        self.current_frame = 0
+        self.since_last_frame = 0
+
     def next_frame(self, dt):
         num_frames = len(self.frames)
         seconds_per_frame = 1/self.fps
@@ -1138,9 +1191,13 @@ class Animation():
             self.current_frame += 1  #hopefully usually 1..
         return retval
 
-    def load_frames_sheet(self, shape, path):
+    def load_frames_sheet(self, shape, path, scale=1.0):
         #shape=(8,8)
         srf = pygame.image.load(path)#.convert_alpha()
+        srf_size = srf.get_size()
+        if scale > 1.0:
+            srf = pygame.transform.scale(srf, (int(srf_size[0] * scale), int(srf_size[1] * scale)))
+
         srf_size = srf.get_size()
         frame_w = srf_size[0]/shape[0]
         frame_h = srf_size[1]/shape[1]
@@ -1153,7 +1210,7 @@ class Animation():
                 img = pygame.Surface(source_rect.size, pygame.SRCALPHA)
                 img.blit(srf, (0,0), source_rect)
                 self.frames.append(img)
-                print("Added frame", source_rect)
+                #print("Added frame", source_rect)
 
 
 if __name__ == '__main__':
