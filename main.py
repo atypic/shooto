@@ -246,7 +246,7 @@ class Player(pygame.sprite.Sprite):
             b.rect.x += dt * b.velocity[0]
             b.rect.y += dt * b.velocity[1]
 
-
+        #There is a subtle bug here somehow. Tore showed it... pop pop's something not there.
         to_remove = []
         for idx, (timeleft, hitter) in enumerate(self.hitters):
             if timeleft <= 0.0:
@@ -391,7 +391,7 @@ class ShootoServer():
                     #not your own bullet
                     if not (ib, pid2) in self.bullet_hits[pid]:
                         self.bullet_hits[pid].append((ib, pid2))
-                        self.players[pid2].hitters.append([0.5, pid2])
+                        self.players[pid2].hitters.append([0.5, pid]) #eh?
                         #only hit if not cooled down
                         if self.players[pid2].cooldown == 0:
                             self.players[pid2].health = max(self.players[pid2].health - 1, 0)
@@ -1017,7 +1017,7 @@ class Client():
             for timeleft, h in client.player.hitters:
                 if timeleft > 0.0:
                     blitimg = client.player.hit_img
-                    break #all we need to know.
+                    break #we have been hit.
 
 
             if client.player.status == PlayerState.dead:
@@ -1033,7 +1033,7 @@ class Client():
                 
             #in case we haven't gotten a new update yet, let's predict where the clients are, assuming
             #they kept the velocity we saw last.
-            for name, plr in client.other_players.items():
+            for pid, plr in client.other_players.items():
                 if (datetime.datetime.now() - t_last_update).total_seconds() > dt:
                     plr.velocity[1] += 1000. * dt   #is this even correct. i don't know.
                     plr.rect.x += int(plr.velocity[0] * dt)
