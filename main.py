@@ -351,6 +351,9 @@ class ShootoServer():
 
         self.timeleft = self.settings['round_length']
 
+        self.send_sequence_nr = 0
+        self.rec_sequence_nr = {}  #one per pid.
+
     def handle_queues(self):
         if len(self.meta_queue) > 0:
             for cliaddr, meta in self.meta_queue:
@@ -370,10 +373,12 @@ class ShootoServer():
         if len(self.event_queue) >  0:
             for cliaddr, event in self.event_queue:
                 pid = self.cliaddr_to_pid[cliaddr]
+                if event[7] <= self.rec_sequence_nr[pid]:
+                    print("SERVER: Warning, packet ouf of sequence!")
+                    return
 
                 if self.players[pid].cooldown == 0:
                     self.players[pid].react(event[2], event[3], event[6])  #react to events
-
 
                 self.players[pid].updates_without_events = 0
 
@@ -461,6 +466,7 @@ class ShootoServer():
 
             diff = datetime.datetime.now() - time_last_update
 
+            #20 sort of magic number... means 50 updates per second.
             if diff.total_seconds() * 1000 > 20:
                 #handle the queues!
                 self.handle_queues()
@@ -517,6 +523,7 @@ class ShootoServer():
         self.players[self.pid].rect.y = self.gmap.spawnpoints[sp][1]
 
         self.connected_clients.append(cliaddr)
+        self.rec_sequence_nr[self.pid] = -1   #first packet should have 0 in seqnr
         self.pid += 1
         print(f"SERVER: Created a new player: {name} at {cliaddr}")
 
@@ -547,7 +554,8 @@ class ShootoServer():
 
 
     def update_clients(self):
-        state = ["state", [(p.pid,
+        state = ["state", self.send_sequence_nr,
+                            [(p.pid,
                             p.name,
                             p.rect.x, p.rect.y,
                             p.velocity[0], p.velocity[1],
@@ -577,6 +585,7 @@ class ShootoServer():
 
         #we have sent the updates, doesn't really matter anymore. we keep score anyway.
         self.bullet_hits = defaultdict(list)
+        self.send_sequence_nr += 1
 
 
 def main_server(args):
@@ -775,8 +784,8 @@ def signal_handler(sig, frame):
 class Client():
     def __init__(self):
         pygame.init()
-        self.screeenwidth = 800
-        self.screenheight = 800
+        self.screeenwidth = 1600
+        self.screenheight = 1200
         self.screen = pygame.display.set_mode((self.screeenwidth,self.screenheight))
 
  
@@ -821,6 +830,10 @@ class Client():
                                         (0,0),
                                         0,
                                         fontsize=20)
+
+        #first state packet is 0 or above.
+        self.last_seq_nr = -1
+        self.send_seq_nr = 0
 
     def start_game(self):
         global game_over
@@ -905,7 +918,7 @@ class Client():
         def menu_player_change_name(text):
             self.player.name = text
 
-        menu = pygame_menu.Menu(400,400, 'Shooto!')
+        menu = pygame_menu.Menu(800,800, 'Shooto!')
         menu.add_text_input('Player name: ', default=self.player.name, textinput_id="player_name",
                 onchange=menu_player_change_name)
         menu.add_button('Mark ready!', menu_start_game, self, menu.get_widget("player_name").get_value())
@@ -993,8 +1006,10 @@ class Client():
                     keystate = pygame.key.get_pressed()
                     #send event to server
                     if client.client_socket in write_rdy:
-                        msg = ["event", eventcount, event.type, event.key, client.player.name, dt, keystate]
+                        msg = ["event", eventcount, event.type, event.key, client.player.name, dt,
+                                keystate, self.send_seq_nr]
                         send_socket(client.client_socket, msg, client.server_addr)
+                        self.send_seq_nr += 1
                     #but also update local player
                     client.player.react(event.type, event.key, keystate)
                     client.player.update(gmap, dt)
@@ -1115,8 +1130,18 @@ class Client():
             if msg[0] == "state":
                 t_last_update = datetime.datetime.now()
 
+                #sequence number magic.
+                seqnr = int(msg[1])
+
+                if seqnr <= self.last_seq_nr:
+                    print(f"Client warning, packet out of sequence ({seqnr}), expected >\
+                            {self.last_seq_nr}")
+                    return
+                
+                self.last_seq_nr = seqnr
+
                 #this is already decoded
-                for p in msg[1]:
+                for p in msg[2]:
                     pid = p[0]
 
                     #PIDs are generated on the server, so we don't have one initially.
@@ -1145,7 +1170,6 @@ class Client():
                         self.update_player(new_player, p)
                         client.scoreboard.add_player(new_player) #todo: duplication...
                         print(f"CLIENT: New player with pid {pid} connected!")
-
                     else:
                         self.update_player(self.other_players[pid], p)
 
