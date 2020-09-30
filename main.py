@@ -151,6 +151,7 @@ class Player(pygame.sprite.Sprite):
         self.img.fill(self.color)
 
     def react(self, event_type, event_key, keystate):
+        print(f"EVENT KEY {event_key}")
         if event_type == pygame.KEYDOWN:
             if event_key == pygame.K_a:
                 self.facing_left = True
@@ -158,6 +159,7 @@ class Player(pygame.sprite.Sprite):
             if event_key == pygame.K_d:
                 self.facing_left = False
                 self.velocity[0] = self.movespeed
+                print(f"GOING RIGHT, {self.velocity[0]}")
             if event_key == pygame.K_j:
                 if self.grounded:
                     self.velocity[1] = -self.movespeed
@@ -186,7 +188,7 @@ class Player(pygame.sprite.Sprite):
 
         if event_type == pygame.KEYUP:
             #pressed keys
-            if event_key == pygame.K_a and self.velocity[0] < 0:
+            if event_key == pygame.K_a and self.velocity[0] <= 0:
                 if keystate[pygame.K_d]:
                     self.facing_left = False
                     self.velocity[0] = self.movespeed
@@ -211,21 +213,17 @@ class Player(pygame.sprite.Sprite):
     #update the state of the player based on inputs and other external factors
     def update(self, mappy, dt):
         self.grounded = False
-        self.velocity[1] += self.gravity * dt   #gravity, but why is this fucked?
 
         delta_distance_x = self.velocity[0] * dt
-        delta_distance_y = self.velocity[1] * dt
 
-        self.rect.x += delta_distance_x
-        self.rect.y += delta_distance_y
+        self.posx += delta_distance_x
 
-
-        self.rect.x = max(0, min(mappy.size[0]-16, self.rect.x))
-        self.rect.y = max(0, min(mappy.size[1]-16, self.rect.y))
+        self.rect.x = int(max(0, min(mappy.size[0]-16, self.posx)))
+        self.rect.y = int(max(0, min(mappy.size[1]-16, self.posy)))
         #px = pygame.PixelArray(mappy.map)
         px = mappy.pixels
 
-        raylen = int(abs(delta_distance_y)) + 1
+        raylen = 10# int(abs(delta_distance_y)) + 1
 
         #collision_value = mappy.map.map_rgb(255,0,0)  #what?
         collision_value = [255,0,0]
@@ -239,14 +237,20 @@ class Player(pygame.sprite.Sprite):
                     self.velocity[1] = 0
                     self.grounded = True
                     break
+        delta_distance_y = 0.0
+        if not self.grounded: 
+            self.velocity[1] += self.gravity * dt   #gravity, but why is this fucked?
+            delta_distance_y = self.velocity[1] * dt
+            self.posy += delta_distance_y
 
+        #print(f"updated: {self.velocity[0]}, dt {dt}, delta {delta_distance_x} newpos {self.rect.x}")
+        #print(f"updated: {self.velocity[1]}, dt {dt}, delta {delta_distance_y} newpos {self.rect.y}")
 
         #update bullets
         for b in self.bullets:
             b.rect.x += dt * b.velocity[0]
             b.rect.y += dt * b.velocity[1]
 
-        #There is a subtle bug here somehow. Tore showed it... pop pop's something not there.
         to_remove = []
         for idx, (timeleft, hitter) in enumerate(self.hitters):
             if timeleft <= 0.0:
@@ -371,6 +375,7 @@ class ShootoServer():
             self.meta_queue = []
 
         if len(self.event_queue) >  0:
+            print(f"SERVER: evq size: {len(self.event_queue)}")
             for cliaddr, event in self.event_queue:
                 pid = self.cliaddr_to_pid[cliaddr]
                 if event[7] <= self.rec_sequence_nr[pid]:
@@ -379,6 +384,8 @@ class ShootoServer():
 
                 if self.players[pid].cooldown == 0:
                     self.players[pid].react(event[2], event[3], event[6])  #react to events
+                    print("SERVER:", event[2], event[3], event[6])
+                    
 
                 self.players[pid].updates_without_events = 0
 
@@ -465,9 +472,8 @@ class ShootoServer():
                         self.gamestate = 0
 
             diff = datetime.datetime.now() - time_last_update
-
             #20 sort of magic number... means 50 updates per second.
-            if diff.total_seconds() * 1000 > 20:
+            if diff.total_seconds() * 1000 > 1:
                 #handle the queues!
                 self.handle_queues()
 
@@ -489,7 +495,7 @@ class ShootoServer():
 
                 time_last_update = datetime.datetime.now()
 
-            #handling done.
+            #Update the clients 50 Hz
             diff = datetime.datetime.now() - time_last_update_2
             if diff.total_seconds() * 1000 > 20:
                 if self.gamestate == 1 or self.gamestate == 2:
@@ -498,13 +504,13 @@ class ShootoServer():
                 time_last_update_2 = datetime.datetime.now()
 
             #prune dead users..
-            for pid in self.players.keys():
-                if self.players[pid].updates_without_events > 10000:
+            #for pid in self.players.keys():
+            #    if self.players[pid].updates_without_events > 10000:
                     #let's remove...
-                    self.connected_clients.remove(self.players[pid].cliaddr)
-                    self.recently_disconnected.append((self.players.cliaddr, pid))
-                    p = self.players.pop(pid)
-                    print(f"{p.name} disconnected!")
+            #        self.connected_clients.remove(self.players[pid].cliaddr)
+            #        self.recently_disconnected.append((self.players.cliaddr, pid))
+            #        p = self.players.pop(pid)
+            #        print(f"SERVER: {p.name} disconnected!")
 
 
 
@@ -966,6 +972,8 @@ class Client():
 
             #nowwww we need to be careful when we update the list of players.
             for pid, name in plr_list:
+                if(pid == -1):
+                    continue
                 label_id = f"lobbylist_{pid}"
                 if menu.get_widget(label_id):
                     menu.get_widget(label_id).set_title(name)
