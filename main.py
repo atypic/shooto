@@ -129,8 +129,8 @@ class Player(pygame.sprite.Sprite):
 
 
         self.rect = pygame.Rect(pos, (16, 16))
-        self.posx = 0.0
-        self.posy = 0.0
+        self.posx = pos[0]
+        self.posy = pos[1]
 
         #these are things that are fired and needs updating when time ticks.
         self.bullets = []
@@ -215,11 +215,9 @@ class Player(pygame.sprite.Sprite):
         self.grounded = False
 
         delta_distance_x = self.velocity[0] * dt
-
         self.posx += delta_distance_x
-
         self.rect.x = int(max(0, min(mappy.size[0]-16, self.posx)))
-        self.rect.y = int(max(0, min(mappy.size[1]-16, self.posy)))
+
         #px = pygame.PixelArray(mappy.map)
         px = mappy.pixels
 
@@ -232,19 +230,22 @@ class Player(pygame.sprite.Sprite):
         if self.velocity[1] >= 0: #we are falling, positive is down.
             for rpixl in range(self.rect.bottom, min(mappy.size[1], self.rect.bottom + raylen)):
                 if (px[self.rect.centerx][rpixl] == collision_value).all():
-                    self.rect.bottom = rpixl
+                    self.rect.bottom = rpixl  #set the y position to the grounded coordinate
                     #self.posy = self.rect.bottom
                     self.velocity[1] = 0
-                    self.grounded = True
+                    self.grounded = True   
                     break
+        
         delta_distance_y = 0.0
+        #if we are not grounded, 
         if not self.grounded: 
             self.velocity[1] += self.gravity * dt   #gravity, but why is this fucked?
             delta_distance_y = self.velocity[1] * dt
             self.posy += delta_distance_y
+            self.rect.y = int(max(0, min(mappy.size[1]-16, self.posy)))
 
-        #print(f"updated: {self.velocity[0]}, dt {dt}, delta {delta_distance_x} newpos {self.rect.x}")
-        #print(f"updated: {self.velocity[1]}, dt {dt}, delta {delta_distance_y} newpos {self.rect.y}")
+        print(f"updated: {self.velocity[0]}, dt {dt}, delta {delta_distance_x} newpos {self.posx} newrect {self.rect.x}")
+        print(f"updated: {self.velocity[1]}, dt {dt}, delta {delta_distance_y} newpos {self.posy} newrect {self.rect.y}")
 
         #update bullets
         for b in self.bullets:
@@ -267,6 +268,8 @@ class Player(pygame.sprite.Sprite):
                 sp = random.randrange(0, len(mappy.spawnpoints))
                 self.rect.x = mappy.spawnpoints[sp][0]
                 self.rect.y = mappy.spawnpoints[sp][1]
+                self.posx = self.rectx
+                self.posy = self.recty
 
 
     def bullet_collisions(self, mappy, dt):
@@ -575,7 +578,9 @@ class ShootoServer():
                             p.health,
                             self.timeleft,
                             p.cooldown,
-                            p.status) for k, p in
+                            p.status,
+                            p.posx,
+                            p.posy) for k, p in
             self.players.items()]]
         to_remove = []
         for c in self.connected_clients:
@@ -1123,6 +1128,8 @@ class Client():
         self.timeleft = state[14]
         player.cooldown = state[15]
         player.status = state[16]
+        player.posx = state[17]
+        player.posy = state[18]
 
         if state[9] != self.player.color:
             self.player.update_color(state[9])
