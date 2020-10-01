@@ -244,8 +244,8 @@ class Player(pygame.sprite.Sprite):
             self.posy += delta_distance_y
             self.rect.y = int(max(0, min(mappy.size[1]-16, self.posy)))
 
-        print(f"updated: {self.velocity[0]}, dt {dt}, delta {delta_distance_x} newpos {self.posx} newrect {self.rect.x}")
-        print(f"updated: {self.velocity[1]}, dt {dt}, delta {delta_distance_y} newpos {self.posy} newrect {self.rect.y}")
+        #print(f"updated: {self.velocity[0]}, dt {dt}, delta {delta_distance_x} newpos {self.posx} newrect {self.rect.x}")
+        #print(f"updated: {self.velocity[1]}, dt {dt}, delta {delta_distance_y} newpos {self.posy} newrect {self.rect.y}")
 
         #update bullets
         for b in self.bullets:
@@ -387,7 +387,7 @@ class ShootoServer():
 
                 if self.players[pid].cooldown == 0:
                     self.players[pid].react(event[2], event[3], event[6])  #react to events
-                    print("SERVER:", event[2], event[3], event[6])
+                    #print("SERVER:", event[2], event[3], event[6])
                     
 
                 self.players[pid].updates_without_events = 0
