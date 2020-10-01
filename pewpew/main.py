@@ -151,7 +151,6 @@ class Player(pygame.sprite.Sprite):
         self.img.fill(self.color)
 
     def react(self, event_type, event_key, keystate):
-        print(f"EVENT KEY {event_key}")
         if event_type == pygame.KEYDOWN:
             if event_key == pygame.K_a:
                 self.facing_left = True
@@ -159,7 +158,6 @@ class Player(pygame.sprite.Sprite):
             if event_key == pygame.K_d:
                 self.facing_left = False
                 self.velocity[0] = self.movespeed
-                print(f"GOING RIGHT, {self.velocity[0]}")
             if event_key == pygame.K_j:
                 if self.grounded:
                     self.velocity[1] = -self.movespeed
