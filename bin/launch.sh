@@ -1,5 +1,5 @@
 #/bin/bash
 killall -9 python
-python main.py -s localhost:1234 &
-#python main.py -c localhost:1234 &
-python main.py -c localhost:1234
+#This starts a server:
+#python ../pewpew/main.py -s localhost:1234 &   
+python ../pewpew/main.py -c localhost:1234
