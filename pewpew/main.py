@@ -266,8 +266,8 @@ class Player(pygame.sprite.Sprite):
                 sp = random.randrange(0, len(mappy.spawnpoints))
                 self.rect.x = mappy.spawnpoints[sp][0]
                 self.rect.y = mappy.spawnpoints[sp][1]
-                self.posx = self.rectx
-                self.posy = self.recty
+                self.posx = self.rect.x
+                self.posy = self.rect.y
 
 
     def bullet_collisions(self, mappy, dt):
