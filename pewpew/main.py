@@ -498,11 +498,11 @@ class ShootoServer():
 
             #Update the clients 50 Hz
             diff = datetime.datetime.now() - time_last_update_2
-        if diff.total_seconds() * 1000 > 20:
-            if self.gamestate == 1 or self.gamestate == 2:
-                self.timeleft -= diff.total_seconds()
-            self.update_clients()
-            time_last_update_2 = datetime.datetime.now()
+            if diff.total_seconds() * 1000 > 20:
+                if self.gamestate == 1 or self.gamestate == 2:
+                    self.timeleft -= diff.total_seconds()
+                self.update_clients()
+                time_last_update_2 = datetime.datetime.now()
 
         #prune dead users..
         #for pid in self.players.keys():
@@ -532,7 +532,7 @@ class ShootoServer():
         self.connected_clients.append(cliaddr)
         self.rec_sequence_nr[self.pid] = -1   #first packet should have 0 in seqnr
         self.pid += 1
-        print(f"SERVER: Created a new player: {name} at {cliaddr}")
+        print(f"SERVER: Created a new player: {name} at {cliaddr}, pid {self.pid - 1}")
 
         return 
 
@@ -927,11 +927,11 @@ class Client():
         def menu_player_change_name(text):
             self.player.name = text
 
-        menu = pygame_menu.Menu(800,800, 'Shooto!')
-        menu.add_text_input('Player name: ', default=self.player.name, textinput_id="player_name",
+        menu = pygame_menu.Menu("Shooto!", 800,800)
+        menu.add.text_input('Player name: ', default=self.player.name, textinput_id="player_name",
                 onchange=menu_player_change_name)
-        menu.add_button('Mark ready!', menu_start_game, self, menu.get_widget("player_name").get_value())
-        menu.add_label("Players: ", label_id='playerlist')
+        menu.add.button('Mark ready!', menu_start_game, self, menu.get_widget("player_name").get_value())
+        menu.add.label("Players: ", label_id='playerlist')
 
         #active_box = tib
         opening_done = False
@@ -970,18 +970,20 @@ class Client():
             if self.player.pid != -1:
                 to_print = self.player.name
                 if self.player.ready:
+                    print("noew aready")
                     to_print = to_print + " ready!"
                 plr_list.append((self.player.pid, to_print))
 
             #nowwww we need to be careful when we update the list of players.
             for pid, name in plr_list:
-                if(pid == -1):
+                if(pid == -1):  
                     continue
                 label_id = f"lobbylist_{pid}"
                 if menu.get_widget(label_id):
                     menu.get_widget(label_id).set_title(name)
                 else:
-                    menu.add_label(name, label_id=label_id)
+                    print("adding label")
+                    menu.add.label(name, label_id=label_id)
 
             pygame.display.flip()
 
@@ -1007,8 +1009,113 @@ class Client():
             self.receieve_state()
             self.handle_pygame_events(dt)
             self.draw_client_viewport(dt, zoom, t_last_update)
+    
 
-            pygame.display.flip()
+    def handle_pygame_events(self, dt):
+
+
+        eventcount = 0  #not sure what this is for.
+
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                game_over = True
+            if event.type == pygame.KEYDOWN or event.type == pygame.KEYUP:
+                _, write_rdy, in_err = select.select([], [self.client_socket], [self.client_socket], 0)
+                keystate = pygame.key.get_pressed()
+                # send event to server
+                if self.client_socket in write_rdy:
+                    msg = ["event", eventcount, event.type, event.key, self.player.name, dt,
+                           keystate, self.send_seq_nr]
+                    send_socket(self.client_socket, msg, self.server_addr)
+                    self.send_seq_nr += 1
+                # but also update local player with this information.
+                self.player.react(event.type, event.key, keystate)
+                self.player.update(self.gmap, dt)
+
+            # print(f"Message received: {pickle.loads(b''.join(chunks))}")
+
+    def draw_client_viewport(self, dt, zoom, t_last_update):
+        # blit the current visible part of the map
+        v_rect = self.gmap.blit_visible_surface((self.player.rect.x, self.player.rect.y), self.screen, zoom)
+
+        # draw the players own bullets...
+        blitimg = self.player.img
+        for b in self.player.bullets:
+            # bullets is in world coords.
+            dest_x = max(0, min(b.rect.x - v_rect.left, self.screen.get_width()))
+            dest_y = max(0, min(b.rect.y - v_rect.top, self.screen.get_height()))
+            self.screen.blit(self.bullet_img, (dest_x, dest_y))
+
+        # also, were we hit by some bullet?
+        # print(player.hitters)
+        for timeleft, h in self.player.hitters:
+            if timeleft > 0.0:
+                blitimg = self.player.hit_img
+                break  # we have been hit.
+
+        if self.player.status == PlayerState.dead:
+            death_anim_pos = (self.player.rect.centerx -
+                              self.player.death_anim.get_center_offset()[0] - v_rect.left,
+                              self.player.rect.centery -
+                              self.player.death_anim.get_center_offset()[1] - v_rect.top)
+            self.screen.blit(self.player.death_anim.next_frame(dt), death_anim_pos)
+            if self.player.cooldown == 0:
+                self.player.death_anim.reset()
+        else:
+            # This draws the player using the local position stored.
+            self.screen.blit(blitimg, (self.player.rect.x - v_rect.left, self.player.rect.y - v_rect.top))
+
+        self.draw_enemies(dt, t_last_update, v_rect)
+        self.draw_client_hud()
+        return
+
+    def draw_enemies(self, dt, t_last_update, v_rect):
+        # Enemy prediction.
+        # in case we haven't gotten a new update yet, let's predict where the selfs are, assuming
+        # they kept the velocity we saw last.
+        for pid, plr in self.other_players.items():
+            if (datetime.datetime.now() - t_last_update).total_seconds() > dt:
+                plr.velocity[1] += 1000. * dt  # is this even correct. i don't know.
+                plr.rect.x += int(plr.velocity[0] * dt)
+                plr.rect.y += int(plr.velocity[1] * dt)
+
+            blitimg = plr.img
+            for b in plr.bullets:
+                # bullets is in world coords.
+                dest_x = max(0, min(b.rect.x - v_rect.left, self.screen.get_width()))
+                dest_y = max(0, min(b.rect.y - v_rect.top, self.screen.get_height()))
+                self.screen.blit(self.bullet_img, (dest_x, dest_y))
+
+            for timeleft, h in plr.hitters:
+                if timeleft > 0.0:
+                    blitimg = plr.hit_img
+                    break  # all we need to know.
+
+            if plr.status == PlayerState.dead:
+                death_anim_pos = (plr.rect.centerx -
+                                  plr.death_anim.get_center_offset()[0] - v_rect.left,
+                                  plr.rect.centery -
+                                  plr.death_anim.get_center_offset()[1] - v_rect.top)
+                self.screen.blit(plr.death_anim.next_frame(dt), death_anim_pos)
+                if plr.cooldown == 0:
+                    plr.death_anim.reset()
+            else:
+                self.screen.blit(blitimg, (plr.rect.x - v_rect.left, plr.rect.y - v_rect.top))
+
+    def draw_client_hud(self):
+        if self.prev_state_player.health != self.player.health:
+            self.health_bar.update_text("HP: " + str(self.player.health))
+
+        self.timeleft_bar.update_text("{:.1f}".format(self.timeleft))
+        self.screen.blit(self.timeleft_bar.get_surface(), (180, 10))
+
+        hp_srf = self.health_bar.get_surface()
+        self.screen.blit(hp_srf, (310, 10))
+
+        self.scoreboard.update_scoreboard_surface()
+        self.screen.blit(self.scoreboard.get_scoreboard_surface(), (10, 10))
+
+        pygame.display.flip()
 
         #gamestate changed
         return
@@ -1153,111 +1260,6 @@ class Animation():
                 img.blit(srf, (0,0), source_rect)
                 self.frames.append(img)
                 #print("Added frame", source_rect)
-
-
-    def handle_pygame_events(self, dt):
-
-
-        eventcount = 0  #not sure what this is for.
-
-        for event in pygame.event.get():
-            if event.type == pygame.QUIT:
-                game_over = True
-            if event.type == pygame.KEYDOWN or event.type == pygame.KEYUP:
-                _, write_rdy, in_err = select.select([], [self.self_socket], [self.self_socket], 0)
-                keystate = pygame.key.get_pressed()
-                # send event to server
-                if self.self_socket in write_rdy:
-                    msg = ["event", eventcount, event.type, event.key, self.player.name, dt,
-                           keystate, self.send_seq_nr]
-                    send_socket(self.self_socket, msg, self.server_addr)
-                    self.send_seq_nr += 1
-                # but also update local player with this information.
-                self.player.react(event.type, event.key, keystate)
-                self.player.update(self.gmap, dt)
-
-            # print(f"Message received: {pickle.loads(b''.join(chunks))}")
-
-    def draw_client_viewport(self, dt, zoom, t_last_update):
-        # blit the current visible part of the map
-        v_rect = self.gmap.blit_visible_surface((self.player.rect.x, self.player.rect.y), self.screen, zoom)
-
-        # draw the players own bullets...
-        blitimg = self.player.img
-        for b in self.player.bullets:
-            # bullets is in world coords.
-            dest_x = max(0, min(b.rect.x - v_rect.left, self.screen.get_width()))
-            dest_y = max(0, min(b.rect.y - v_rect.top, self.screen.get_height()))
-            self.screen.blit(self.bullet_img, (dest_x, dest_y))
-
-        # also, were we hit by some bullet?
-        # print(player.hitters)
-        for timeleft, h in self.player.hitters:
-            if timeleft > 0.0:
-                blitimg = self.player.hit_img
-                break  # we have been hit.
-
-        if self.player.status == PlayerState.dead:
-            death_anim_pos = (self.player.rect.centerx -
-                              self.player.death_anim.get_center_offset()[0] - v_rect.left,
-                              self.player.rect.centery -
-                              self.player.death_anim.get_center_offset()[1] - v_rect.top)
-            self.screen.blit(self.player.death_anim.next_frame(dt), death_anim_pos)
-            if self.player.cooldown == 0:
-                self.player.death_anim.reset()
-        else:
-            # This draws the player using the local position stored.
-            self.screen.blit(blitimg, (self.player.rect.x - v_rect.left, self.player.rect.y - v_rect.top))
-
-        self.draw_enemies(dt, t_last_update, v_rect)
-        self.draw_client_hud()
-        return
-
-    def draw_enempies(self, dt, t_last_update, v_rect):
-        # Enemy prediction.
-        # in case we haven't gotten a new update yet, let's predict where the selfs are, assuming
-        # they kept the velocity we saw last.
-        for pid, plr in self.other_players.items():
-            if (datetime.datetime.now() - t_last_update).total_seconds() > dt:
-                plr.velocity[1] += 1000. * dt  # is this even correct. i don't know.
-                plr.rect.x += int(plr.velocity[0] * dt)
-                plr.rect.y += int(plr.velocity[1] * dt)
-
-            blitimg = plr.img
-            for b in plr.bullets:
-                # bullets is in world coords.
-                dest_x = max(0, min(b.rect.x - v_rect.left, self.screen.get_width()))
-                dest_y = max(0, min(b.rect.y - v_rect.top, self.screen.get_height()))
-                self.screen.blit(self.bullet_img, (dest_x, dest_y))
-
-            for timeleft, h in plr.hitters:
-                if timeleft > 0.0:
-                    blitimg = plr.hit_img
-                    break  # all we need to know.
-
-            if plr.status == PlayerState.dead:
-                death_anim_pos = (plr.rect.centerx -
-                                  plr.death_anim.get_center_offset()[0] - v_rect.left,
-                                  plr.rect.centery -
-                                  plr.death_anim.get_center_offset()[1] - v_rect.top)
-                self.screen.blit(plr.death_anim.next_frame(dt), death_anim_pos)
-                if plr.cooldown == 0:
-                    plr.death_anim.reset()
-            else:
-                self.screen.blit(blitimg, (plr.rect.x - v_rect.left, plr.rect.y - v_rect.top))
-
-    def draw_client_hud(self):
-        if self.prev_state_player.health != self.player.health:
-            self.health_bar.update_text("HP: " + str(self.player.health))
-
-        self.timeleft_bar.update_text("{:.1f}".format(self.timeleft))
-        self.screen.blit(self.timeleft_bar.get_surface(), (180, 10))
-
-        hp_srf = self.health_bar.get_surface()
-        self.screen.blit(hp_srf, (310, 10))
-
-        self.scoreboard.update_scoreboard_surface()
-        self.screen.blit(self.scoreboard.get_scoreboard_surface(), (10, 10))
 
 if __name__ == '__main__':
 
