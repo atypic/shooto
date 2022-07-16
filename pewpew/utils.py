@@ -152,12 +152,14 @@ class PlayerNetState():
         self.jumpspeed = 1500
         self.gravity = 1000
 
+        self.health = 5
+
         self.velocity = [0., 0.]
         self.grounded = False
         self.facing_left = False
         
         #position
-        self.rect = pygame.Rect(pos, (16, 16))
+        self.rect = pygame.Rect((0,0), (16, 16))
 
         # these are things that are fired and needs updating when time ticks.
         self.bullets = []
@@ -175,9 +177,8 @@ class PlayerNetState():
         self.cooldown = 0
         self.status = PlayerState.active
 
-        self.net_state.last_applied_event_id = 0
+        self.last_applied_event_id = 0
 
-        self.hit_img = pygame.Surface((16, 16))
         #randomize
         self.color = pygame.Color(255, 0, 0)
         self.magic_value = None
@@ -194,9 +195,10 @@ class Player(pygame.sprite.Sprite):
 
         # Stuff to do with rendering.
         self.img = pygame.Surface((16, 16))
-        self.img.fill(self.color)
+        self.img.fill(self.net_state.color)
 
         self.hitters = []
+        self.hit_img = pygame.Surface((16, 16))
         self.hit_img.fill((255, 255, 255))
 
         self.death_anim = Animation(fps=30)
@@ -265,8 +267,8 @@ class Player(pygame.sprite.Sprite):
         self.net_state.grounded = False
 
         delta_distance_x = self.net_state.velocity[0] * dt
-        self.posx += delta_distance_x
-        self.net_state.rect.x = int(max(0, min(mappy.size[0]-16, self.posx)))
+        self.net_state.posx += delta_distance_x
+        self.net_state.rect.x = int(max(0, min(mappy.size[0]-16, self.net_state.posx)))
 
         # px = pygame.PixelArray(mappy.map)
         px = mappy.pixels
@@ -292,8 +294,8 @@ class Player(pygame.sprite.Sprite):
             # gravity, but why is this fucked?
             self.net_state.velocity[1] += self.net_state.gravity * dt
             delta_distance_y = self.net_state.velocity[1] * dt
-            self.posy += delta_distance_y
-            self.net_state.rect.y = int(max(0, min(mappy.size[1]-16, self.posy)))
+            self.net_state.posy += delta_distance_y
+            self.net_state.rect.y = int(max(0, min(mappy.size[1]-16, self.net_state.posy)))
 
         # print(f"updated: {self.net_state.velocity[0]}, dt {dt}, delta {delta_distance_x} newpos {self.posx} newrect {self.net_state.rect.x}")
         # print(f"updated: {self.net_state.velocity[1]}, dt {dt}, delta {delta_distance_y} newpos {self.posy} newrect {self.net_state.rect.y}")
@@ -313,14 +315,14 @@ class Player(pygame.sprite.Sprite):
             self.hitters.pop(idx)
 
         # if we died
-        if self.status == PlayerState.dead:
+        if self.net_state.status == PlayerState.dead:
             if self.net_state.cooldown == 0:
-                self.status = PlayerState.active
+                self.net_state.status = PlayerState.active
                 sp = random.randrange(0, len(mappy.spawnpoints))
                 self.net_state.rect.x = mappy.spawnpoints[sp][0]
                 self.net_state.rect.y = mappy.spawnpoints[sp][1]
-                self.posx = self.net_state.rect.x
-                self.posy = self.net_state.rect.y
+                self.net_state.posx = self.net_state.rect.x
+                self.net_state.posy = self.net_state.rect.y
 
     def bullet_collisions(self, mappy, dt):
         # px = pygame.PixelArray(mappy.map)
@@ -359,8 +361,6 @@ class Player(pygame.sprite.Sprite):
                     if (px[b.rect.centerx][rpixl] == collision_value).all():
                         self.net_state.bullets.remove(b)
                         break
-
-        # px.close()
 
         return
 
@@ -536,8 +536,8 @@ class ScoreBoard():
         final_surface.fill((255, 255, 255, 255))
 
         rownum = 0
-        for p in reversed(sorted(self.players, key=lambda x: x.score)):
-            row = TextMessage(p.name + " Kills: " + str(p.score),
+        for p in reversed(sorted(self.players, key=lambda x: x.net_state.score)):
+            row = TextMessage(p.net_state.name + " Kills: " + str(p.net_state.score),
                               (0, 0), 0, fontsize=20)
             final_surface.blit(row.get_surface(
                 0), (0, surfdims[1] * rownum), special_flags=pygame.BLEND_RGBA_MULT)

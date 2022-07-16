@@ -81,7 +81,7 @@ class ShootoServer():
             for cliaddr, event in self.event_queue:
                 pid = self.cliaddr_to_pid[cliaddr]
 
-                if self.players[pid].cooldown == 0:
+                if self.players[pid].net_state.cooldown == 0:
                     self.players[pid].react(
                         event[2], event[3], event[6], event[8], self.gmap)  # react to events
 
@@ -136,10 +136,7 @@ class ShootoServer():
 
         countdown = 3.0
 
-        # t = datetime.datetime.now()
-        # dt = 0
         time_last_update = datetime.datetime.now()
-        time_last_update_2 = datetime.datetime.now()
 
         #need a handler for the server shutdown, really.
         while(not server_shutdown):
@@ -149,27 +146,31 @@ class ShootoServer():
             # argh her har du føkka det til fordi du tenkte ikkje på at
             # det er serveren som bestemmer gamestate
             if self.gamestate == 0:
-                ready_states = [p.ready for p in self.players.values()]
+                #check if all connected clients are ready
+                ready_states = [p.net_state.ready for p in self.players.values()]
                 if len(ready_states) > 0 and False not in ready_states:
                     self.timeleft = self.settings['round_length']
 
                     self.gamestate = 1
+                    self.update_clients_gamestate(self.gamestate)
 
             if self.gamestate == 1:
                 if self.timeleft < 0:
                     self.gamestate = 2
+                    self.update_clients_gamestate(self.gamestate)
                     self.timeleft = 2
 
             if self.gamestate == 2:
                 if self.timeleft < 0:
                     for p in self.players.keys():
-                        self.players[p].ready = False
-                        self.players[p].health = self.settings['initial_hp']
-                        self.players[p].score = 0
+                        self.players[p].net_state.ready = False
+                        self.players[p].net_state.health = self.settings['initial_hp']
+                        self.players[p].net_state.score = 0
                         self.gamestate = 0
+                        self.update_clients_gamestate(self.gamestate)
 
             secs_since_last_update = (datetime.datetime.now() - time_last_update).total_seconds()
-            updates_per_second = 30
+            updates_per_second = 30.
             
             if secs_since_last_update > (1/updates_per_second): 
                 # handle the queues!
@@ -180,11 +181,10 @@ class ShootoServer():
                     continue
 
                 for pid in self.players.keys():
-
                     self.players[pid].react(None, None, None, secs_since_last_update, self.gmap)
 
-                    self.players[pid].cooldown = max(
-                        0, self.players[pid].cooldown - secs_since_last_update)
+                    self.players[pid].net_state.cooldown = max(
+                        0, self.players[pid].net_state.cooldown - secs_since_last_update)
                     # collision detection.
                     #self.players[pid].update(self.gmap, diff.total_seconds())
 
@@ -202,18 +202,17 @@ class ShootoServer():
 
     def player_factory(self, cliaddr, name, color, magic):
         self.cliaddr_to_pid[cliaddr] = self.pid
-        self.players[self.pid] = Player(
-            color=color, hp=self.settings['initial_hp'])
-        self.players[self.pid].name = name
-        self.players[self.pid].cliaddr = cliaddr
-        self.players[self.pid].pid = self.pid
-        self.players[self.pid].magic_value = magic
+        self.players[self.pid] = Player()
+        self.players[self.pid].net_state.name = name
+        self.players[self.pid].net_state.cliaddr = cliaddr
+        self.players[self.pid].net_state.pid = self.pid
+        self.players[self.pid].net_state.magic_value = magic
 
         # do i really need this?
         sp = random.randrange(0, len(self.gmap.spawnpoints))
-        self.players[self.pid].spawnpoint = sp
-        self.players[self.pid].rect.x = self.gmap.spawnpoints[sp][0]
-        self.players[self.pid].rect.y = self.gmap.spawnpoints[sp][1]
+        self.players[self.pid].net_state.spawnpoint = sp
+        self.players[self.pid].net_state.rect.x = self.gmap.spawnpoints[sp][0]
+        self.players[self.pid].net_state.rect.y = self.gmap.spawnpoints[sp][1]
 
         self.connected_clients.append(cliaddr)
         # first packet should have 0 in seqnr
@@ -236,9 +235,10 @@ class ShootoServer():
             # check if we have already made a player for this client.
             self.meta_queue.append((cliaddr, dat))
         elif dat[0] == "player_ready":
+            print(f"Received player_ready from {cliaddr}")
             pid = self.cliaddr_to_pid[cliaddr]
-            self.players[pid].ready = True
-            self.players[pid].name = dat[1]  # might have update the name
+            self.players[pid].net_state.ready = True
+            self.players[pid].net_state.name = dat[1]  # might have update the name
         elif dat[0] == "player_disconnect":
             self.connected_clients.remove(cliaddr)
             pid = self.cliaddr_to_pid[cliaddr]
@@ -247,28 +247,12 @@ class ShootoServer():
             print(f"{p.name} disconnected!")
             print(self.recently_disconnected)
 
+    def update_clients_gamestate(self, new_gamestate):
+        to_send = ["game_statechange", new_gamestate]
+        for c in self.connected_clients:
+            send_socket(self.socket, to_send, c)
+
     def update_clients(self):
-        state = ["state", 42, 
-                 [(p.pid,
-                   p.name,
-                   p.rect.x, p.rect.y,
-                   p.velocity[0], p.velocity[1],
-                   p.bullets,
-                   p.score,
-                   p.hitters,
-                   p.color,
-                   p.magic_value,
-                   p.ready,
-                   self.gamestate,
-                   p.health,
-                   self.timeleft,
-                   p.cooldown,
-                   p.status,
-                   p.posx,
-                   p.posy,
-                   p.net_state.last_applied_event_id
-                   ) for k, p in
-                  self.players.items()]]
         to_send = ["state", 42,
                     [p.net_state for k,p in self.players.items()]]
         to_remove = []

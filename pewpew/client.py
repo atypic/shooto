@@ -48,17 +48,12 @@ class Client():
 
         self.last_packet_ts = None
         # makes a new player...
-        self.player = Player(color=col)
+        self.player = Player()
+        self.player.net_state.color = col
         self.player.net_state.name = "Jumbo"
         self.player.net_state.rect.x = 600
         self.player.net_state.rect.y = 0
         self.player.net_state.pid = -1
-
-        self.prev_state_player = Player(color=col)
-        self.prev_state_player.net_state.name = ""
-        self.prev_state_player.net_state.rect.x = 600
-        self.prev_state_player.net_state.rect.y = 0
-        self.prev_state_player.net_state.pid = -1
 
         self.scoreboard = ScoreBoard()
         self.scoreboard.add_player(self.player)
@@ -106,15 +101,15 @@ class Client():
             # generate a magic value
             self.player.magic_value = random.randint(0, 10000)
             print(
-                f"CLIENT: created socket, my magic number is {self.player.magic_value}")
+                f"CLIENT: created socket, my magic number is {self.player.net_state.magic_value}")
 
         # attempt to send the connect packet.
-        send_socket(self.client_socket, ["player_meta", self.player.name, self.player.color,
-                                         self.player.magic_value], self.server_addr)
+        send_socket(self.client_socket, ["player_meta", self.player.net_state.name, self.player.net_state.color,
+                                         self.player.net_state.magic_value], self.server_addr)
 
     def send_player_ready(self, server_addr=None):
         send_socket(self.client_socket, [
-                    "player_ready", self.player.name, self.player.magic_value], self.server_addr)
+                    "player_ready", self.player.net_state.name, self.player.net_state.magic_value], self.server_addr)
 
     # gamestate 2
     def ending(self):
@@ -138,11 +133,6 @@ class Client():
             self.receieve_state()
             pygame.display.flip()
 
-            # change gamestate after a while...
-
-    # select map, player name and bot opponents
-    # gamestate 0
-
     def opening(self):
         # render the name input box
         # tib = TextInputBox("Name, then enter: ", (10,10))
@@ -150,18 +140,18 @@ class Client():
         # _tib = pygame_menu.widgets.TextInput(label="Test", textinput_id='name_input')
 
         # send_player_ready = False
-        print(self.player.name)
+        print(self.player.net_state.name)
 
         def menu_start_game(self, text):
+            print("We are going ready!")
             self.player.net_state.ready = True
             self.send_player_ready(server_addr=self.args.connect)
-            # self.gamestate = 1
 
         def menu_player_change_name(text):
             self.player.name = text
 
         menu = pygame_menu.Menu("Shooto!", 800, 800)
-        menu.add.text_input('Player name: ', default=self.player.name, textinput_id="player_name",
+        menu.add.text_input('Player name: ', default=self.player.net_state.name, textinput_id="player_name",
                             onchange=menu_player_change_name)
         menu.add.button('Mark ready!', menu_start_game, self,
                         menu.get_widget("player_name").get_value())
@@ -196,19 +186,19 @@ class Client():
             self.receieve_state()  # update the other_players thingy.
 
             # Now we create a list of all the players, and jankily mark the ready players as ready.
-            plr_info = [(plr.name, plr.ready, plr.pid)
+            plr_info = [(plr.net_state.name, plr.net_state.ready, plr.net_state.pid)
                         for plr in self.other_players.values()]
             plr_list = [(p[2], p[0] + " ready!") if p[1]
                         else (p[2], p[0]) for p in plr_info]
 
             # I AM SORRY ABOUT THIS FUTURE ME, I SUCK AND THIS SORTA WORKS so... i kept it.
             # Add ourselves to the list of players.
-            if self.player.pid != -1:
-                to_print = self.player.name
+            if self.player.net_state.pid != -1:
+                to_print = self.player.net_state.name
                 if self.player.net_state.ready:
                     print("noew aready")
                     to_print = to_print + " ready!"
-                plr_list.append((self.player.pid, to_print))
+                plr_list.append((self.player.net_state.pid, to_print))
 
             # nowwww we need to be careful when we update the list of players.
             for pid, name in plr_list:
@@ -218,7 +208,6 @@ class Client():
                 if menu.get_widget(label_id):
                     menu.get_widget(label_id).set_title(name)
                 else:
-                    print("adding label")
                     menu.add.label(name, label_id=label_id)
 
             pygame.display.flip()
@@ -273,7 +262,7 @@ class Client():
 
                 if self.client_socket in write_rdy:
                     keystate = pygame.key.get_pressed()
-                    msg = ["event", eventcount, event.type, event.key, self.player.name, dt_sec,
+                    msg = ["event", eventcount, event.type, event.key, self.player.net_state.name, dt_sec,
                            keystate, self.player.net_state.last_applied_event_id, dt_sec]
                     self.player.net_state.last_applied_event_id += 1
 
@@ -290,11 +279,11 @@ class Client():
     def draw_client_viewport(self, dt, zoom, t_last_update):
         # blit the current visible part of the map
         v_rect = self.gmap.blit_visible_surface(
-            (self.player.rect.x, self.player.rect.y), self.screen, zoom)
+            (self.player.net_state.rect.x, self.player.net_state.rect.y), self.screen, zoom)
 
         # draw the players own bullets...
         blitimg = self.player.img
-        for b in self.player.bullets:
+        for b in self.player.net_state.bullets:
             # bullets is in world coords.
             dest_x = max(0, min(b.rect.x - v_rect.left,
                          self.screen.get_width()))
@@ -309,11 +298,11 @@ class Client():
                 blitimg = self.player.hit_img
                 break  # we have been hit.
 
-        if self.player.status == PlayerState.dead:
-            death_anim_pos = (self.player.rect.centerx -
+        if self.player.net_state.status == PlayerState.dead:
+            death_anim_pos = (self.player.net_state.rect.centerx -
                               self.player.death_anim.get_center_offset()[
                                   0] - v_rect.left,
-                              self.player.rect.centery -
+                              self.player.net_state.rect.centery -
                               self.player.death_anim.get_center_offset()[1] - v_rect.top)
             self.screen.blit(
                 self.player.death_anim.next_frame(dt), death_anim_pos)
@@ -321,13 +310,16 @@ class Client():
                 self.player.death_anim.reset()
         else:
             # This draws the player using the local position stored.
-            self.screen.blit(blitimg, (self.player.rect.x -
-                             v_rect.left, self.player.rect.y - v_rect.top))
+            self.screen.blit(blitimg, (self.player.net_state.rect.x -
+                             v_rect.left, self.player.net_state.rect.y - v_rect.top))
 
         self.draw_enemies(dt, t_last_update, v_rect)
         self.draw_client_hud()
         return
 
+    # This "should" simply draw the enemies, but currently
+    # it also interpolates them and shit, which is annoying
+    # and should be moved to the receving portion.
     def draw_enemies(self, dt, t_last_update, v_rect):
         # Enemy prediction.
         # in case we haven't gotten a new update yet, let's predict where the selfs are, assuming
@@ -335,12 +327,12 @@ class Client():
         for pid, plr in self.other_players.items():
             if (datetime.datetime.now() - t_last_update).total_seconds() > dt:
                 # is this even correct. i don't know.
-                plr.velocity[1] += 1000. * dt
-                plr.rect.x += int(plr.velocity[0] * dt)
-                plr.rect.y += int(plr.velocity[1] * dt)
+                plr.net_state.velocity[1] += 1000. * dt
+                plr.net_state.rect.x += int(plr.net_state.velocity[0] * dt)
+                plr.net_state.rect.y += int(plr.net_state.velocity[1] * dt)
 
             blitimg = plr.img
-            for b in plr.bullets:
+            for b in plr.net_state.bullets:
                 # bullets is in world coords.
                 dest_x = max(0, min(b.rect.x - v_rect.left,
                              self.screen.get_width()))
@@ -353,22 +345,21 @@ class Client():
                     blitimg = plr.hit_img
                     break  # all we need to know.
 
-            if plr.status == PlayerState.dead:
-                death_anim_pos = (plr.rect.centerx -
+            if plr.net_state.status == PlayerState.dead:
+                death_anim_pos = (plr.net_state.rect.centerx -
                                   plr.death_anim.get_center_offset()[
                                       0] - v_rect.left,
-                                  plr.rect.centery -
+                                  plr.net_state.rect.centery -
                                   plr.death_anim.get_center_offset()[1] - v_rect.top)
                 self.screen.blit(plr.death_anim.next_frame(dt), death_anim_pos)
                 if plr.cooldown == 0:
                     plr.death_anim.reset()
             else:
                 self.screen.blit(
-                    blitimg, (plr.rect.x - v_rect.left, plr.rect.y - v_rect.top))
+                    blitimg, (plr.net_state.rect.x - v_rect.left, plr.net_state.rect.y - v_rect.top))
 
     def draw_client_hud(self):
-        if self.prev_state_player.health != self.player.health:
-            self.health_bar.update_text("HP: " + str(self.player.health))
+        self.health_bar.update_text("HP: " + str(self.player.net_state.health))
 
         self.timeleft_bar.update_text("{:.1f}".format(self.timeleft))
         self.screen.blit(self.timeleft_bar.get_surface(), (180, 10))
@@ -387,27 +378,13 @@ class Client():
     def update_player(self, player, state):
         # don't update our own name because this breaks the opening
         if player != self.player:
-            player.name = state[1]
+            player.net_state.name = state.name
 
-        player.rect.x = state[2]
-        player.rect.y = state[3]
-        player.velocity = [state[4], state[5]]
-        player.bullets = state[6]
-        player.score = state[7]
-        player.hitters = state[8]
-        player.magic_value = state[10]
-        player.net_state.ready = state[11]
-        self.gamestate = state[12]
-        player.health = state[13]
-        self.timeleft = state[14]
-        player.cooldown = state[15]
-        player.status = state[16]
-        player.posx = state[17]
-        player.posy = state[18]
-        player.net_state.last_applied_event_id = state[19]
+        player.net_state = state
 
-        if state[9] != self.player.color:
-            self.player.update_color(state[9])
+        if state.color != self.player.net_state.color:
+            self.player.update_color(state.color)
+
 
     #Receive state of all players (including self) from the server.
     def receieve_state(self):
@@ -418,35 +395,40 @@ class Client():
             return
         for self.client_socket in read_rdy:
             msg, srv = rcv_socket(self.client_socket)
-            if msg[0] == "state":
-                t_last_update = datetime.datetime.now()
+            if msg[0] == "game_statechange":
+                self.gamestate = msg[1]
+                print("Reveived message about state change to ", msg[1])
 
-                # this is already decoded
-                for p in msg[2]:
-                    pid = p.net_state.pid
+            if msg[0] == "state":
+                # msg2 is depickled, contains 
+                # PlayerNetState objects for all connected entities
+                for player_netstate in msg[2]:
+                    pid = player_netstate.pid
 
                     # PIDs are generated on the server, so we don't have one initially.
                     # but we do send a magic value that identifies ourselves so we know which PID is
                     # ours. This is hacky, yes.
                     # usually first connect
-                    if self.player.pid == -1:
-                        if p.net_state.magic_value == self.player.magic_value:
-                            self.player.pid = p.net_state.pid
+                    if self.player.net_state.pid == -1:
+                        print("found a -1 pid, so thats probably us i guess")
+                        if player_netstate.magic_value == self.player.net_state.magic_value:
+                            self.player.net_state.pid = player_netstate.pid
                         else:
                             print(
                                 f"CLIENT: Got a pid with -1 and not recognized magic value")
 
                     # ok, so we have the magic value (todo: this should really be the PID... it makes
                     # more sense for the clients to decide this themselves.
-                    
-                    # This is "us".
+
+                    #update entity with authorative information from server,
+                    # including ourselves.
+                    for other_player in self.other_players.keys():
+                        if player_netstate.pid == other_player:
+                            other_players[other_player].netstate = player_netstate 
+
+                    # This is the "us"-part
                     if pid == self.player.net_state.pid:
-
-                        # The previous state is used for various stuff, like checking if we need
-                        # to redraw the HUD. Thus copy it.
-                        self.prev_state_player = copy.copy(self.player)
-                        self.update_player(self.player, p)
-
+                        self.player.net_state = player_netstate
                         # server reconciliation:
                         # how are we doing relative to server?
                         # check if the server is behind us in terms of applying updates.
@@ -458,9 +440,11 @@ class Client():
                             #bigger than what we are ready to apply?
                             #just drop it. if not, we re-apply
                             #while waiting for server to update us
-                            if(ev[7] <= p[19]):
+                            if(ev[7] <= player_netstate.last_applied_event_id):
+                                #remove from pending inputs if the server has applied this already
                                 self.pending_inputs.pop(q)
                             else:
+                                print("Replaying old events due to missing server stuff")
                                 self.player.react(ev[2], ev[3], ev[6], ev[8], self.gmap)
                                 q+=1
 
@@ -471,12 +455,12 @@ class Client():
                     if pid not in self.other_players.keys():
                         new_player = Player()
                         self.other_players[pid] = new_player
-                        self.update_player(new_player, p)
+                        self.update_player(new_player, player_netstate)
                         # todo: duplication...
                         self.scoreboard.add_player(new_player)
                         print(f"CLIENT: New player with pid {pid} connected!")
                     else:
-                        self.update_player(self.other_players[pid], p)
+                        self.update_player(self.other_players[pid], player_netstate)
 
             elif msg[0] == "player_disconnect":
                 print(self.other_players)

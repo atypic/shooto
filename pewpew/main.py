@@ -52,5 +52,5 @@ if __name__ == '__main__':
     print("Someone killd the game. See ya")
     # let's try to disconnect nicely. who cares if we can't.
     send_socket(client.client_socket, [
-                "player_disconnect", client.player.name, client.player.pid], client.server_addr)
+                "player_disconnect", client.player.net_state.name, client.player.net_state.pid], client.server_addr)
     pygame.quit()
