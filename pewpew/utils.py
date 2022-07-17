@@ -1,4 +1,4 @@
-from collections import defaultdict
+from collections import deque
 import pickle
 import errno
 import random
@@ -176,6 +176,8 @@ class PlayerNetState():
         self.spawnpoint = 0
         self.cooldown = 0
         self.status = PlayerState.active
+        
+        self.hitters = []
 
         self.last_applied_event_id = 0
 
@@ -197,13 +199,17 @@ class Player(pygame.sprite.Sprite):
         self.img = pygame.Surface((16, 16))
         self.img.fill(self.net_state.color)
 
-        self.hitters = []
         self.hit_img = pygame.Surface((16, 16))
         self.hit_img.fill((255, 255, 255))
 
         self.death_anim = Animation(fps=30)
         self.death_anim.load_frames_sheet(
             (8, 8), 'particlefx_12.png', scale=3.0)
+
+        # This stores the updates from the server when they arrive; 
+        # and we'll interpolate "up to" this point in time when
+        # rendering positions of enemies.
+        self.position_buffer = deque()
 
 
     def update_color(self, col):
@@ -273,7 +279,7 @@ class Player(pygame.sprite.Sprite):
         # px = pygame.PixelArray(mappy.map)
         px = mappy.pixels
 
-        raylen = 20  # int(abs(delta_distance_y)) + 1
+        raylen = 30  # int(abs(delta_distance_y)) + 1
 
         # collision_value = mappy.map.map_rgb(255,0,0)  #what?
         collision_value = [255, 0, 0]
@@ -306,13 +312,13 @@ class Player(pygame.sprite.Sprite):
             b.rect.y += dt * b.velocity[1]
 
         to_remove = []
-        for idx, (timeleft, hitter) in enumerate(self.hitters):
+        for idx, (timeleft, hitter) in enumerate(self.net_state.hitters):
             if timeleft <= 0.0:
                 to_remove.append(idx)
             else:
-                self.hitters[idx][0] = max(0.0, timeleft - dt)
+                self.net_state.hitters[idx][0] = max(0.0, timeleft - dt)
         for idx in set(to_remove):
-            self.hitters.pop(idx)
+            self.net_state.hitters.pop(idx)
 
         # if we died
         if self.net_state.status == PlayerState.dead:

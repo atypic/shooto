@@ -1,13 +1,10 @@
-from collections import defaultdict
 import datetime
 import socket
-import copy
-import argparse
 import random
+from tkinter import W
 import pygame
 import pygame_menu
 import select
-import datetime
 from collections import deque
 import pygame.locals
 import pygame.image
@@ -71,6 +68,7 @@ class Client():
         # first state packet is 0 or above.
         self.send_seq_nr = 0
         self.client_shutdown = False
+
 
     def start_game(self):
         while self.client_shutdown == False:
@@ -158,16 +156,12 @@ class Client():
         menu.add.label("Players: ", label_id='playerlist')
 
         # active_box = tib
-        opening_done = False
         bgcolor = (150, 150, 200, 255)
         # tb = MultilineTextBox(bgcolor = bgcolor)
         plr_list = []
-        old_plr_list = []
         last_update = datetime.datetime.now()
-        connected = False
         fps = 60
         self.clock = pygame.time.Clock()
-        name_locked = False
 
         # this is the lobby state...
         while self.gamestate == 0:
@@ -196,7 +190,6 @@ class Client():
             if self.player.net_state.pid != -1:
                 to_print = self.player.net_state.name
                 if self.player.net_state.ready:
-                    print("noew aready")
                     to_print = to_print + " ready!"
                 plr_list.append((self.player.net_state.pid, to_print))
 
@@ -219,9 +212,6 @@ class Client():
         fps = 60.
         clock = pygame.time.Clock()
 
-        # write_rdy = []
-        # read_rdy = []
-
         self.bullet_img = pygame.Surface((8, 8))
         self.bullet_img.fill(pygame.Color(255, 0, 100))
 
@@ -229,12 +219,35 @@ class Client():
         while self.gamestate == 1 and self.client_shutdown == False:
             dt = clock.tick_busy_loop(fps) / 1000.  # we update at 60 fps. dt in seconds.
 
-            # this is the state from the server, we update our world.
+            # Get updates from server
             self.receieve_state()
             # apply all the events since last update.
             self.handle_pygame_events(dt)
+            # Noodles 
+            self.interpolateEntities(fps)
+
             self.draw_client_viewport(dt, zoom, t_last_update)
 
+    def interpolateEntities(self, fps):
+        now = datetime.datetime.now()
+        #we'll show the enemies in the past
+        render_timestamp = now - datetime.timedelta(1000. - 1./fps)
+
+        for enemy in self.other_players.values():
+            buffer = enemy.position_buffer 
+            #drop any queued updates that are too old to be used.
+            while len(buffer) > 2 and buffer[1][0] <= render_timestamp:
+                buffer.popleft()
+
+            if len( buffer) > 2 and \
+                    buffer[0][0] <= render_timestamp and \
+                    buffer[1][0] >= render_timestamp:
+                t0, x0,y0 = buffer[0]
+                t1, x1,y1 = buffer[1]
+                enemy.rect.centerx = x0 + (x1 - x0) * (render_timestamp - t0) / (t1-t0)
+                enemy.rect.centery = y0 + (y1 - y0) * (render_timestamp - t0) / (t1-t0)
+           
+    
     def handle_pygame_events(self, dt):
         eventcount = 0
         _, write_rdy, in_err = select.select(
@@ -293,7 +306,7 @@ class Client():
 
         # also, were we hit by some bullet?
         # print(player.hitters)
-        for timeleft, h in self.player.hitters:
+        for timeleft, h in self.player.net_state.hitters:
             if timeleft > 0.0:
                 blitimg = self.player.hit_img
                 break  # we have been hit.
@@ -325,22 +338,17 @@ class Client():
         # in case we haven't gotten a new update yet, let's predict where the selfs are, assuming
         # they kept the velocity we saw last.
         for pid, plr in self.other_players.items():
-            if (datetime.datetime.now() - t_last_update).total_seconds() > dt:
-                # is this even correct. i don't know.
-                plr.net_state.velocity[1] += 1000. * dt
-                plr.net_state.rect.x += int(plr.net_state.velocity[0] * dt)
-                plr.net_state.rect.y += int(plr.net_state.velocity[1] * dt)
 
             blitimg = plr.img
             for b in plr.net_state.bullets:
-                # bullets is in world coords.
+                # bullets are in world coords.
                 dest_x = max(0, min(b.rect.x - v_rect.left,
                              self.screen.get_width()))
                 dest_y = max(0, min(b.rect.y - v_rect.top,
                              self.screen.get_height()))
                 self.screen.blit(self.bullet_img, (dest_x, dest_y))
 
-            for timeleft, h in plr.hitters:
+            for timeleft, h in plr.net_state.hitters:
                 if timeleft > 0.0:
                     blitimg = plr.hit_img
                     break  # all we need to know.
@@ -420,11 +428,7 @@ class Client():
                     # ok, so we have the magic value (todo: this should really be the PID... it makes
                     # more sense for the clients to decide this themselves.
 
-                    #update entity with authorative information from server,
-                    # including ourselves.
-                    for other_player in self.other_players.keys():
-                        if player_netstate.pid == other_player:
-                            other_players[other_player].netstate = player_netstate 
+                   
 
                     # This is the "us"-part
                     if pid == self.player.net_state.pid:
@@ -461,6 +465,11 @@ class Client():
                         print(f"CLIENT: New player with pid {pid} connected!")
                     else:
                         self.update_player(self.other_players[pid], player_netstate)
+
+                    #positoin buffers
+                    self.other_players[player_netstate.pid].position_buffer.append((datetime.datetime.now(), 
+                                                player_netstate.posx, player_netstate.posy))
+                        
 
             elif msg[0] == "player_disconnect":
                 print(self.other_players)

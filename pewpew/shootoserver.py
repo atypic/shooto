@@ -96,34 +96,34 @@ class ShootoServer():
         if pid != pid2:
             # check all of pid's bullets for collision with pid2 :(
             bullets_to_remove = []
-            for ib, bullet in enumerate(self.players[pid].bullets):
-                if bullet.rect.colliderect(self.players[pid2].rect):
+            for ib, bullet in enumerate(self.players[pid].net_state.bullets):
+                if bullet.rect.colliderect(self.players[pid2].net_state.rect):
                     # not your own bullet
                     if not (ib, pid2) in self.bullet_hits[pid]:
                         self.bullet_hits[pid].append((ib, pid2))
-                        self.players[pid2].hitters.append([0.5, pid])  # eh?
+                        self.players[pid2].net_state.hitters.append([0.5, pid])  # eh?
                         # only hit if not cooled down
-                        if self.players[pid2].cooldown == 0:
-                            self.players[pid2].health = max(
-                                self.players[pid2].health - 1, 0)
+                        if self.players[pid2].net_state.cooldown == 0:
+                            self.players[pid2].net_state.health = max(
+                                self.players[pid2].net_state.health - 1, 0)
                         bullets_to_remove.append(bullet)
 
                         # did we die? if so, set a new spawnpoint, but don't move the
                         # player until a cooldown.
-                        if self.players[pid2].health == 0:
-                            self.players[pid2].status = PlayerState.dead
-                            self.players[pid].score += 1.0
+                        if self.players[pid2].net_state.health == 0:
+                            self.players[pid2].net_state.status = PlayerState.dead
+                            self.players[pid].net_state.score += 1.0
                             print(self.players[pid2], " died!")
                             sp = random.randrange(
                                 0, len(self.gmap.spawnpoints))
                             # self.players[pid2].rect.x = self.gmap.spawnpoints[sp][0]
                             # self.players[pid2].rect.y = self.gmap.spawnpoints[sp][1]
                             # print("new position: ", self.gmap.spawnpoints[sp])
-                            self.players[pid2].cooldown = self.settings['cooldown']
-                            self.players[pid2].health = self.settings['initial_hp']
+                            self.players[pid2].net_state.cooldown = self.settings['cooldown']
+                            self.players[pid2].net_state.health = self.settings['initial_hp']
 
             # this removes the bullets shot that hit something.
-            self.players[pid].bullets = [x for x in self.players[pid].bullets if x not in
+            self.players[pid].net_state.bullets = [x for x in self.players[pid].net_state.bullets if x not in
                                          bullets_to_remove]
 
     def server_main(self):
