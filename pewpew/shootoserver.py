@@ -54,7 +54,6 @@ class ShootoServer():
 
         self.timeleft = self.settings['round_length']
 
-        self.rec_sequence_nr = {}  # one per pid.
 
         #Install the sigint handler 
         signal.signal(signal.SIGINT, server_shutdown_handler)
@@ -68,10 +67,6 @@ class ShootoServer():
                                         meta[2],
                                         meta[3]
                                         )
-                pid = self.cliaddr_to_pid[cliaddr]
-                self.players[pid].name = meta[1]
-                self.players[pid].color = meta[2]
-
             self.meta_queue = []
 
         # Now handle the incoming message and its events, 
@@ -153,12 +148,7 @@ class ShootoServer():
 
                     self.gamestate = 1
                     self.update_clients_gamestate(self.gamestate)
-
-            if self.gamestate == 1:
-                if self.timeleft < 0:
-                    self.gamestate = 2
-                    self.update_clients_gamestate(self.gamestate)
-                    self.timeleft = 2
+                    continue
 
             if self.gamestate == 2:
                 if self.timeleft < 0:
@@ -168,6 +158,14 @@ class ShootoServer():
                         self.players[p].net_state.score = 0
                         self.gamestate = 0
                         self.update_clients_gamestate(self.gamestate)
+                        continue
+
+            if self.gamestate == 1:
+                if self.timeleft < 0:
+                    self.gamestate = 2
+                    self.update_clients_gamestate(self.gamestate)
+                    self.timeleft = 2
+                    continue
 
             secs_since_last_update = (datetime.datetime.now() - time_last_update).total_seconds()
             updates_per_second = 30.
@@ -179,14 +177,13 @@ class ShootoServer():
                 if self.gamestate == 0:
                     time_last_update = datetime.datetime.now()
                     continue
-
+                
+                # We're running.
                 for pid in self.players.keys():
                     self.players[pid].react(None, None, None, secs_since_last_update, self.gmap)
 
                     self.players[pid].net_state.cooldown = max(
                         0, self.players[pid].net_state.cooldown - secs_since_last_update)
-                    # collision detection.
-                    #self.players[pid].update(self.gmap, diff.total_seconds())
 
                     for pid2 in self.players.keys():
                         self.player_collision(pid, pid2)
@@ -215,12 +212,12 @@ class ShootoServer():
         self.players[self.pid].net_state.rect.y = self.gmap.spawnpoints[sp][1]
 
         self.connected_clients.append(cliaddr)
-        # first packet should have 0 in seqnr
-        self.rec_sequence_nr[self.pid] = -1
-        self.pid += 1
-        print(
-            f"SERVER: Created a new player: {name} at {cliaddr}, pid {self.pid - 1}")
+        
 
+        print(
+            f"SERVER: Created a new player/client: {name} at {cliaddr}, pid {self.pid}")
+
+        self.pid += 1
         return
 
     def receive_from_clients(self):

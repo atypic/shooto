@@ -277,15 +277,17 @@ class Client():
                     keystate = pygame.key.get_pressed()
                     msg = ["event", eventcount, event.type, event.key, self.player.net_state.name, dt_sec,
                            keystate, self.player.net_state.last_applied_event_id, dt_sec]
+                   
+                    #store events and time it was applied for later reconciliation
+                    self.pending_inputs.append(msg)
+
                     self.player.net_state.last_applied_event_id += 1
 
-                send_socket(self.client_socket, msg, self.server_addr)
+                    send_socket(self.client_socket, msg, self.server_addr)
 
-                # but also update local player with this information. (client side prediction)
-                self.player.react(event.type, event.key, keystate, dt_sec, self.gmap)
+                    # but also update local player with this information. (client side prediction)
+                    self.player.react(event.type, event.key, keystate, dt_sec, self.gmap)
                 
-                # store events and time it was applied for later reconciliation
-                self.pending_inputs.append(msg)
 
             # print(f"Message received: {pickle.loads(b''.join(chunks))}")
 
@@ -383,17 +385,6 @@ class Client():
         # gamestate changed
         return
 
-    def update_player(self, player, state):
-        # don't update our own name because this breaks the opening
-        if player != self.player:
-            player.net_state.name = state.name
-
-        player.net_state = state
-
-        if state.color != self.player.net_state.color:
-            self.player.update_color(state.color)
-
-
     #Receive state of all players (including self) from the server.
     def receieve_state(self):
         if self.client_socket:
@@ -418,17 +409,15 @@ class Client():
                     # ours. This is hacky, yes.
                     # usually first connect
                     if self.player.net_state.pid == -1:
-                        print("found a -1 pid, so thats probably us i guess")
                         if player_netstate.magic_value == self.player.net_state.magic_value:
                             self.player.net_state.pid = player_netstate.pid
+                            print("Found ourselves")
                         else:
                             print(
                                 f"CLIENT: Got a pid with -1 and not recognized magic value")
 
                     # ok, so we have the magic value (todo: this should really be the PID... it makes
                     # more sense for the clients to decide this themselves.
-
-                   
 
                     # This is the "us"-part
                     if pid == self.player.net_state.pid:
@@ -448,23 +437,24 @@ class Client():
                                 #remove from pending inputs if the server has applied this already
                                 self.pending_inputs.pop(q)
                             else:
-                                print("Replaying old events due to missing server stuff")
+                                print(f"Replaying {ev[7]}")
                                 self.player.react(ev[2], ev[3], ev[6], ev[8], self.gmap)
                                 q+=1
 
                         continue
-
+                    
+                    # If we're here, we'll process enemies
                     # first time we see this PID, so we create
                     # local "players" to keep (and draw) our opponents.
                     if pid not in self.other_players.keys():
                         new_player = Player()
                         self.other_players[pid] = new_player
-                        self.update_player(new_player, player_netstate)
+                        self.other_players[pid].net_state = player_netstate
                         # todo: duplication...
                         self.scoreboard.add_player(new_player)
                         print(f"CLIENT: New player with pid {pid} connected!")
                     else:
-                        self.update_player(self.other_players[pid], player_netstate)
+                        self.other_players[pid].net_state = player_netstate
 
                     #positoin buffers
                     self.other_players[player_netstate.pid].position_buffer.append((datetime.datetime.now(), 
